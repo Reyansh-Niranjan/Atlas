@@ -1,0 +1,69 @@
+name: Build Firmware
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - src/**
+      - include/**
+      - lib/**
+      - scripts/**
+      - platformio.ini
+      - .github/workflows/build-firmware.yml
+  pull_request:
+    paths:
+      - src/**
+      - include/**
+      - lib/**
+      - scripts/**
+      - platformio.ini
+      - .github/workflows/build-firmware.yml
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      PIO_ENV: 4d_systems_esp32s3_gen4_r8n16
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PlatformIO Core
+        run: pip install platformio
+
+      - name: Install dependencies
+        run: pio pkg install -e $PIO_ENV
+
+      - name: Build firmware
+        run: pio run -e $PIO_ENV
+
+      - name: Prepare firmware.bin
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp .pio/build/$PIO_ENV/firmware.bin dist/firmware.bin
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-bin
+          path: dist/firmware.bin
+
+      - name: Upload firmware.bin to GitHub Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/firmware.bin
+          fail_on_unmatched_files: true
