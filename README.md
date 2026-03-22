@@ -56,6 +56,7 @@ It will:
 - Export dist/firmware.bin
 - Upload firmware.bin as a workflow artifact named firmware-bin
 - On every push to main, automatically create a tag and GitHub Release, then upload firmware.bin
+- On every push to main, automatically derive FW_VERSION from the generated tag, build firmware, then create release with firmware.bin
 
 How to run:
 

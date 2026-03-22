@@ -4,6 +4,15 @@ from pathlib import Path
 Import("env")
 
 
+def apply_fw_version_override():
+    fw_version = os.environ.get("FW_VERSION_OVERRIDE", "").strip()
+    if not fw_version:
+        return
+
+    env.Append(BUILD_FLAGS=[f'-D FW_VERSION=\\"{fw_version}\\"'])
+    print(f"[patch_safegithubota] FW_VERSION override: {fw_version}")
+
+
 def patch_file(path: Path, replacements):
     if not path.exists():
         print(f"[patch_safegithubota] Skipping missing file: {path}")
@@ -26,6 +35,8 @@ def patch_file(path: Path, replacements):
 
 
 def main():
+    apply_fw_version_override()
+
     pio_env = env.subst("$PIOENV")
     libdeps_dir = Path(env.subst("$PROJECT_LIBDEPS_DIR")) / pio_env
     base = libdeps_dir / "SafeGithubOTA" / "src"

@@ -42,7 +42,24 @@ jobs:
       - name: Install dependencies
         run: pio pkg install -e $PIO_ENV
 
-      - name: Build firmware
+      - name: Generate auto tag
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: auto_tag
+        run: echo "tag=v0.0.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Derive FW_VERSION from tag
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: fw_version
+        run: echo "value=${{ steps.auto_tag.outputs.tag }}" | sed 's/value=v/value=/' >> "$GITHUB_OUTPUT"
+
+      - name: Build firmware (main push)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          FW_VERSION_OVERRIDE: ${{ steps.fw_version.outputs.value }}
+        run: pio run -e $PIO_ENV
+
+      - name: Build firmware (non-release events)
+        if: github.event_name != 'push' || github.ref != 'refs/heads/main'
         run: pio run -e $PIO_ENV
 
       - name: Prepare firmware.bin
@@ -57,11 +74,6 @@ jobs:
           name: firmware-bin
           path: dist/firmware.bin
 
-      - name: Generate auto tag
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        id: auto_tag
-        run: echo "tag=v0.0.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
-
       - name: Create Git tag in repository
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/github-script@v7
@@ -69,12 +81,20 @@ jobs:
           script: |
             const tag = '${{ steps.auto_tag.outputs.tag }}';
             const sha = context.sha;
-            await github.rest.git.createRef({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              ref: `refs/tags/${tag}`,
-              sha,
-            });
+            try {
+              await github.rest.git.createRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `refs/tags/${tag}`,
+                sha,
+              });
+            } catch (e) {
+              if (e.status === 422) {
+                core.info(`Tag ${tag} already exists, reusing it.`);
+              } else {
+                throw e;
+              }
+            }
 
       - name: Create release and upload firmware.bin
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
