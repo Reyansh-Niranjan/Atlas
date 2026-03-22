@@ -20,6 +20,7 @@ SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 #endif
 
 static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
+static const uint8_t WIFI_CONNECT_RETRIES = 2;
 
 TFT_eSPI tft = TFT_eSPI(); // Invoke library, pins defined in User_Setup.h
 SafeGithubOTA ota;
@@ -124,17 +125,58 @@ static bool provisionFromSecrets() {
 }
 
 static bool connectWifiWithTimeout() {
-  tftLogf("[WIFI] Connecting to: %s", WIFI_SSID);
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  auto wifiStatusText = [](wl_status_t status) -> const char * {
+    switch (status) {
+    case WL_IDLE_STATUS:
+      return "IDLE";
+    case WL_NO_SSID_AVAIL:
+      return "NO SSID";
+    case WL_SCAN_COMPLETED:
+      return "SCAN DONE";
+    case WL_CONNECTED:
+      return "CONNECTED";
+    case WL_CONNECT_FAILED:
+      return "CONNECT FAILED";
+    case WL_CONNECTION_LOST:
+      return "CONNECTION LOST";
+    case WL_DISCONNECTED:
+      return "DISCONNECTED";
+    default:
+      return "UNKNOWN";
+    }
+  };
 
-  const uint32_t startMs = millis();
-  while (WiFi.status() != WL_CONNECTED && (millis() - startMs) < WIFI_CONNECT_TIMEOUT_MS) {
-    delay(500);
-    tftLogf("[WIFI] waiting...");
+  WiFi.mode(WIFI_STA);
+
+  for (uint8_t attempt = 1; attempt <= WIFI_CONNECT_RETRIES; ++attempt) {
+    tftLogf("[WIFI] Attempt %u/%u", attempt, WIFI_CONNECT_RETRIES);
+    tftLogf("[WIFI] Connecting to: %s", WIFI_SSID);
+
+    WiFi.disconnect(true);
+    delay(150);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+    const uint32_t startMs = millis();
+    uint32_t lastProgressMs = 0;
+    while (WiFi.status() != WL_CONNECTED && (millis() - startMs) < WIFI_CONNECT_TIMEOUT_MS) {
+      delay(250);
+      if (millis() - lastProgressMs >= 3000) {
+        lastProgressMs = millis();
+        tftLogf("[WIFI] waiting... %lus", (millis() - startMs) / 1000UL);
+      }
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+      return true;
+    }
+
+    tftLogf("[WIFI] Attempt failed: %s (%d)",
+            wifiStatusText(WiFi.status()),
+            static_cast<int>(WiFi.status()));
   }
 
-  return WiFi.status() == WL_CONNECTED;
+  tftLogf("[WIFI] HINT: verify SSID/password and 2.4GHz signal");
+  return false;
 }
 
 void setup() {
