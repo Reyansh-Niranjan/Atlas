@@ -5,6 +5,8 @@
 #include <SGO_Provisioning.h>
 #include "secrets.h"
 #include <cstring>
+#include <cstdarg>
+#include <cstdio>
 
 // Required by SafeGithubOTA for TLS + JSON parsing on ESP32 loop task.
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
@@ -21,6 +23,52 @@ static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
 
 TFT_eSPI tft = TFT_eSPI(); // Invoke library, pins defined in User_Setup.h
 SafeGithubOTA ota;
+
+static int logCursorY = 86;
+static const int LOG_LINE_HEIGHT = 18;
+
+static void tftInitUi() {
+  tft.init();
+  tft.setRotation(1);
+  tft.writecommand(0x36);
+  tft.writedata(0x40);
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextWrap(true, false);
+
+  // Bold, non-italic FreeFont for a readable status header.
+  tft.setFreeFont(&FreeSansBold12pt7b);
+  tft.setTextColor(TFT_CYAN, TFT_BLACK);
+  tft.setCursor(0, 24);
+  tft.println("EduScraper OTA Test");
+
+  tft.drawFastHLine(0, 34, tft.width(), TFT_DARKGREY);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setCursor(0, 52);
+  tft.println("Live logs:");
+
+  tft.setFreeFont(&FreeSansBold9pt7b);
+  logCursorY = 86;
+}
+
+static void tftLogf(const char *fmt, ...) {
+  char line[128];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(line, sizeof(line), fmt, args);
+  va_end(args);
+
+  if (logCursorY > tft.height() - 8) {
+    tft.fillRect(0, 70, tft.width(), tft.height() - 70, TFT_BLACK);
+    logCursorY = 86;
+    tft.setCursor(0, logCursorY);
+    tft.print("...");
+    logCursorY += LOG_LINE_HEIGHT;
+  }
+
+  tft.setCursor(0, logCursorY);
+  tft.println(line);
+  logCursorY += LOG_LINE_HEIGHT;
+}
 
 static void copyBounded(char* dst, size_t dstSize, const char* src) {
   if (dst == nullptr || dstSize == 0) {
@@ -42,7 +90,7 @@ static bool credentialsDiffer(const SGO_Credentials& a, const SGO_Credentials& b
 }
 
 static bool provisionFromSecrets() {
-  Serial.println("[BOOT] Loading OTA credentials from secrets.h");
+  tftLogf("[BOOT] Loading OTA config");
 
   SGO_Credentials desired{};
   copyBounded(desired.owner, sizeof(desired.owner), OTA_GITHUB_OWNER);
@@ -50,42 +98,40 @@ static bool provisionFromSecrets() {
   copyBounded(desired.pat, sizeof(desired.pat), OTA_GITHUB_PAT);
   copyBounded(desired.binFilename, sizeof(desired.binFilename), OTA_BIN_FILENAME);
 
-  Serial.printf("[BOOT] OTA target repo: %s/%s | asset: %s | PAT: %s\n",
-                desired.owner,
-                desired.repo,
-                desired.binFilename,
-                (desired.pat[0] == '\0') ? "empty (public repo mode)" : "set");
+  tftLogf("[BOOT] Repo: %s/%s", desired.owner, desired.repo);
+  tftLogf("[BOOT] Asset: %s", desired.binFilename);
+  tftLogf("[BOOT] PAT: %s", (desired.pat[0] == '\0') ? "empty" : "set");
 
   if (desired.owner[0] == '\0' || desired.repo[0] == '\0' || desired.binFilename[0] == '\0') {
-    Serial.println("OTA secrets are incomplete. Fill OTA_GITHUB_* values in secrets.h");
+    tftLogf("[ERR] OTA_GITHUB_* incomplete");
     return false;
   }
 
   SGO_Credentials current{};
   const bool hasCurrent = SGO_Provisioning::loadCredentials(current);
   if (hasCurrent && !credentialsDiffer(current, desired)) {
-    Serial.println("[BOOT] OTA credentials already synced in NVS.");
+    tftLogf("[BOOT] OTA credentials already synced");
     return true;
   }
 
   if (!SGO_Provisioning::saveCredentials(desired)) {
-    Serial.println("Failed to write OTA credentials to NVS.");
+    tftLogf("[ERR] Failed writing OTA credentials");
     return false;
   }
 
-  Serial.println("OTA credentials saved from secrets.h");
+  tftLogf("[BOOT] OTA credentials saved");
   return true;
 }
 
 static bool connectWifiWithTimeout() {
-  Serial.printf("[WIFI] Connecting to SSID: %s\n", WIFI_SSID);
+  tftLogf("[WIFI] Connecting to: %s", WIFI_SSID);
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   const uint32_t startMs = millis();
   while (WiFi.status() != WL_CONNECTED && (millis() - startMs) < WIFI_CONNECT_TIMEOUT_MS) {
     delay(500);
-    Serial.print('.');
+    tftLogf("[WIFI] waiting...");
   }
 
   return WiFi.status() == WL_CONNECTED;
@@ -94,26 +140,15 @@ static bool connectWifiWithTimeout() {
 void setup() {
   Serial.begin(115200);
   delay(200);
-  Serial.println();
-  Serial.println("================ EduScraper Test Boot ================");
-  Serial.printf("[BOOT] FW version: %s\n", FW_VERSION);
-
-  tft.init();
-  tft.setRotation(1);
-  tft.writecommand(0x36);
-  tft.writedata(0x40);
-  tft.fillScreen(TFT_BLACK);
-  tft.setFreeFont(&FreeSansBoldOblique24pt7b);
-  tft.setTextColor(TFT_WHITE);
-  tft.setCursor(0, 50);
-  tft.println("EduScraper Boot");
+  tftInitUi();
+  tftLogf("[BOOT] FW version: %s", FW_VERSION);
 
   ota.setVersion(FW_VERSION);
   ota.setAutoCheckInterval(6 * 60 * 60); // check every 6 hours
-  Serial.println("[OTA] Auto-check interval set to 6 hours.");
+  tftLogf("[OTA] Auto-check: 6 hours");
 
   ota.onLog([](const char *message) {
-    Serial.printf("[OTA-LIB] %s\n", message);
+    tftLogf("[OTA] %s", message);
   });
 
   ota.onProgress([](uint32_t written, uint32_t total) {
@@ -124,42 +159,37 @@ void setup() {
     const uint8_t pct = static_cast<uint8_t>((written * 100U) / total);
     if (pct >= lastPct + 10 || pct == 100) {
       lastPct = pct;
-      Serial.printf("OTA progress: %u%%\n", pct);
+      tftLogf("[OTA] Progress: %u%%", pct);
     }
   });
 
   if (!provisionFromSecrets()) {
-    Serial.println("[BOOT] Stopping startup due to OTA config error.");
-    tft.setCursor(0, 95);
-    tft.println("OTA cfg missing");
+    tftLogf("[BOOT] Stop: OTA config error");
     return;
   }
 
-  Serial.print("Connecting Wi-Fi");
   if (!connectWifiWithTimeout()) {
-    Serial.println("\nWi-Fi connection failed. OTA skipped.");
-    Serial.printf("[WIFI] Final status code: %d\n", WiFi.status());
-    tft.setCursor(0, 140);
-    tft.println("Wi-Fi failed");
+    tftLogf("[ERR] Wi-Fi failed, status: %d", WiFi.status());
     return;
   }
 
-  Serial.println("\nWi-Fi connected.");
-  Serial.printf("[WIFI] IP: %s\n", WiFi.localIP().toString().c_str());
-  Serial.printf("[WIFI] RSSI: %d dBm\n", WiFi.RSSI());
-  Serial.println("Initializing OTA...");
+  tftLogf("[WIFI] Connected");
+  tftLogf("[WIFI] IP: %s", WiFi.localIP().toString().c_str());
+  tftLogf("[WIFI] RSSI: %d dBm", WiFi.RSSI());
+  tftLogf("[OTA] Initializing");
   const SGO_Error beginErr = ota.begin();
-  Serial.printf("[OTA] begin() result: %d (%s)\n", static_cast<int>(beginErr), ota.getLastError());
+  tftLogf("[OTA] begin(): %d", static_cast<int>(beginErr));
+  tftLogf("[OTA] begin msg: %s", ota.getLastError());
 
   if (ota.wasRolledBack()) {
-    Serial.println("Notice: previous firmware was rolled back.");
+    tftLogf("[OTA] Rolled back previous FW");
   }
 
-  Serial.println("Checking GitHub release OTA...");
+  tftLogf("[OTA] Checking releases");
   const SGO_Error checkErr = ota.checkAndUpdate();
-  Serial.printf("[OTA] checkAndUpdate() result: %d (%s)\n",
-                static_cast<int>(checkErr), ota.getLastError());
-  Serial.println("[BOOT] Setup complete.");
+  tftLogf("[OTA] check/update: %d", static_cast<int>(checkErr));
+  tftLogf("[OTA] result msg: %s", ota.getLastError());
+  tftLogf("[BOOT] Setup complete");
 }
 
 void loop() {
