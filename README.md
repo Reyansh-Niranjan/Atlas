@@ -55,10 +55,11 @@ It will:
 - Build firmware for environment 4d_systems_esp32s3_gen4_r8n16
 - Export dist/firmware.bin
 - Upload firmware.bin as a workflow artifact named firmware-bin
-- Upload firmware.bin to the GitHub Release when a release is published
+- Automatically create/update a GitHub Release on version tag push and upload firmware.bin
 
 How to run:
 
 1. Push changes to main, or open a pull request.
-2. Or run it manually from Actions using the Build Firmware workflow.
-3. Download firmware-bin from the workflow artifacts.
+2. Create and push a tag (example: v0.0.2) to auto-create a release with firmware.bin.
+3. Or run it manually from Actions and set tag_name to create/upload a release.
+4. Download firmware-bin from workflow artifacts if needed.

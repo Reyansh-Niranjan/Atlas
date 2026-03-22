@@ -2,8 +2,20 @@ name: Build Firmware
 
 on:
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Optional tag to publish release (example: v0.0.2)"
+        required: false
+        type: string
+      release_name:
+        description: "Optional release title"
+        required: false
+        type: string
   push:
     branches: [ main ]
+    tags:
+      - "v*"
+      - "*.*.*"
     paths:
       - src/**
       - include/**
@@ -19,9 +31,6 @@ on:
       - scripts/**
       - platformio.ini
       - .github/workflows/build-firmware.yml
-  release:
-    types: [published]
-
 permissions:
   contents: write
 
@@ -61,9 +70,22 @@ jobs:
           name: firmware-bin
           path: dist/firmware.bin
 
-      - name: Upload firmware.bin to GitHub Release
-        if: github.event_name == 'release'
+      - name: Create/Update Release (from tag push)
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: dist/firmware.bin
+          fail_on_unmatched_files: true
+
+      - name: Create/Update Release (manual)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag_name }}
+          name: ${{ github.event.inputs.release_name != '' && github.event.inputs.release_name || github.event.inputs.tag_name }}
+          generate_release_notes: true
           files: dist/firmware.bin
           fail_on_unmatched_files: true
