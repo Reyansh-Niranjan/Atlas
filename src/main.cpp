@@ -15,7 +15,7 @@
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
 #ifndef FW_VERSION
-#define FW_VERSION "0.0.1"
+#define FW_VERSION "0.0.14"
 #endif
 
 #ifndef OTA_GITHUB_PAT
@@ -27,6 +27,7 @@ static const uint8_t WIFI_CONNECT_RETRIES = 2;
 static const uint8_t SD_CS_PIN = 10;
 static const uint32_t SD_SPI_FREQ_HZ = 10000000;
 static const char *LOGO_SD_PATH = "assets/R2_Reyansh-LOGO.jpg";
+static const char *LOGO_SD_PATH_ALT = "/assets/R2_Reyansh-LOGO.jpg";
 
 TFT_eSPI tft = TFT_eSPI(); // Invoke library, pins defined in User_Setup.h
 SafeGithubOTA ota;
@@ -177,31 +178,18 @@ static bool tftJpegOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t
 static bool initSdCard() {
   tftLogf("[SD] Initializing (CS=%u)", SD_CS_PIN);
 
-  // Keep both SPI devices deselected before mounting SD.
-  pinMode(TFT_CS, OUTPUT);
-  digitalWrite(TFT_CS, HIGH);
   pinMode(SD_CS_PIN, OUTPUT);
   digitalWrite(SD_CS_PIN, HIGH);
 
-  // Try the same style as the known-working ESP32 SD example first.
-  if (SD.begin(SD_CS_PIN)) {
-    tftLogf("[SD] Mounted (default SPI config)");
-  } else {
-    tftLogf("[SD] Default mount failed, trying explicit SPI pins");
-
-    // Fallback: use the same physical SPI pins as board defaults/TFT wiring.
-    SPI.begin(TFT_SCLK, TFT_MISO, TFT_MOSI, SD_CS_PIN);
-
-    // Conservative frequency improves compatibility with marginal cards/modules.
-    if (!SD.begin(SD_CS_PIN, SPI, SD_SPI_FREQ_HZ)) {
-      tftLogf("[SD] Init failed");
-      tftLogf("[SD] Check card/wiring/CS=%u", SD_CS_PIN);
-      tftLogf("SD FAILED!");
-      return false;
-    }
-
-    tftLogf("[SD] Mounted (explicit SPI config)");
+  SPIClass &tftSpi = tft.getSPIinstance();
+  if (!SD.begin(SD_CS_PIN, tftSpi, SD_SPI_FREQ_HZ)) {
+    tftLogf("[SD] Init failed");
+    tftLogf("[SD] Check card/wiring/CS=%u", SD_CS_PIN);
+    tftLogf("SD FAILED!");
+    return false;
   }
+
+  tftLogf("[SD] Mounted");
 
   const uint8_t cardType = SD.cardType();
   if (cardType == CARD_NONE) {
@@ -216,16 +204,29 @@ static bool initSdCard() {
 }
 
 static bool showLogoFromSdWithFade() {
-  tftLogf("[LOGO] SD file: %s", LOGO_SD_PATH);
+  const char *logoPath = nullptr;
+  const bool hasPrimary = SD.exists(LOGO_SD_PATH);
+  const bool hasAlt = SD.exists(LOGO_SD_PATH_ALT);
 
-  if (!SD.exists(LOGO_SD_PATH)) {
+  if (hasPrimary) {
+    logoPath = LOGO_SD_PATH;
+  } else if (hasAlt) {
+    logoPath = LOGO_SD_PATH_ALT;
+  }
+
+  tftLogf("[LOGO] Try: %s", LOGO_SD_PATH);
+  tftLogf("[LOGO] Try: %s", LOGO_SD_PATH_ALT);
+
+  if (logoPath == nullptr) {
     tftLogf("[LOGO] Missing file on SD");
     return false;
   }
 
+  tftLogf("[LOGO] Using: %s", logoPath);
+
   uint16_t jpgW = 0;
   uint16_t jpgH = 0;
-  if (TJpgDec.getSdJpgSize(&jpgW, &jpgH, LOGO_SD_PATH) != JDR_OK || jpgW == 0 || jpgH == 0) {
+  if (TJpgDec.getSdJpgSize(&jpgW, &jpgH, logoPath) != JDR_OK || jpgW == 0 || jpgH == 0) {
     tftLogf("[LOGO] Failed reading JPG size");
     return false;
   }
@@ -269,7 +270,7 @@ static bool showLogoFromSdWithFade() {
   tft.fillScreen(TFT_BLACK);
   for (uint8_t alpha = 32; alpha <= 255; alpha = static_cast<uint8_t>(alpha + 32)) {
     jpegFadeAlpha = alpha;
-    TJpgDec.drawSdJpg(drawX, drawY, LOGO_SD_PATH);
+    TJpgDec.drawSdJpg(drawX, drawY, logoPath);
     delay(60);
     if (alpha == 224) {
       break;
@@ -277,7 +278,7 @@ static bool showLogoFromSdWithFade() {
   }
 
   jpegFadeAlpha = 255;
-  TJpgDec.drawSdJpg(drawX, drawY, LOGO_SD_PATH);
+  TJpgDec.drawSdJpg(drawX, drawY, logoPath);
   return true;
 }
 
