@@ -24,6 +24,7 @@ SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
 static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
 static const uint8_t WIFI_CONNECT_RETRIES = 2;
+static const uint8_t SD_CS_PIN = 10;
 static const char *LOGO_SD_PATH = "assets/R2_Reyansh-LOGO.jpg";
 
 TFT_eSPI tft = TFT_eSPI(); // Invoke library, pins defined in User_Setup.h
@@ -100,8 +101,16 @@ static void tftLogf(const char *fmt, ...) {
 static bool tftJpegOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap) {
   const int16_t screenW = tft.width();
   const int16_t screenH = tft.height();
+  const int16_t right = x + static_cast<int16_t>(w);
+  const int16_t bottom = y + static_cast<int16_t>(h);
 
-  if (x >= screenW || y >= screenH || (x + static_cast<int16_t>(w)) <= 0 || (y + static_cast<int16_t>(h)) <= 0) {
+  if (x >= screenW || y >= screenH || right <= 0 || bottom <= 0) {
+    return true;
+  }
+
+  // Fast path: no fade math when block is fully visible at full opacity.
+  if (jpegFadeAlpha == 255 && x >= 0 && y >= 0 && right <= screenW && bottom <= screenH) {
+    tft.pushImage(x, y, w, h, bitmap);
     return true;
   }
 
@@ -165,8 +174,8 @@ static bool tftJpegOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t
 }
 
 static bool initSdCard() {
-  tftLogf("[SD] Initializing");
-  if (!SD.begin()) {
+  tftLogf("[SD] Initializing (CS=%u)", SD_CS_PIN);
+  if (!SD.begin(SD_CS_PIN)) {
     tftLogf("[SD] Init failed");
     return false;
   }
