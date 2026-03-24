@@ -1,7 +1,29 @@
 import os
 from pathlib import Path
+from typing import Iterable, Protocol, cast
 
-Import("env")
+
+class _SConsEnv(Protocol):
+    def Append(self, **kwargs: object) -> None: ...
+
+    def subst(self, value: str) -> str: ...
+
+
+class _NullEnv:
+    def Append(self, **kwargs: object) -> None:
+        return
+
+    def subst(self, value: str) -> str:
+        return value
+
+
+try:
+    Import("env")  # type: ignore[name-defined]
+except NameError:
+    # Keep script importable in normal Python (outside PlatformIO/SCons).
+    pass
+
+env = cast(_SConsEnv, globals().get("env", _NullEnv()))
 
 
 def apply_fw_version_override():
@@ -13,7 +35,7 @@ def apply_fw_version_override():
     print(f"[patch_safegithubota] FW_VERSION override: {fw_version}")
 
 
-def patch_file(path: Path, replacements):
+def patch_file(path: Path, replacements: Iterable[tuple[str, str]]) -> bool:
     if not path.exists():
         print(f"[patch_safegithubota] Skipping missing file: {path}")
         return False
