@@ -25,6 +25,7 @@ SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
 static const uint8_t WIFI_CONNECT_RETRIES = 2;
 static const uint8_t SD_CS_PIN = 10;
+static const uint32_t SD_SPI_FREQ_HZ = 10000000;
 static const char *LOGO_SD_PATH = "assets/R2_Reyansh-LOGO.jpg";
 
 TFT_eSPI tft = TFT_eSPI(); // Invoke library, pins defined in User_Setup.h
@@ -175,8 +176,19 @@ static bool tftJpegOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t
 
 static bool initSdCard() {
   tftLogf("[SD] Initializing (CS=%u)", SD_CS_PIN);
-  if (!SD.begin(SD_CS_PIN)) {
+
+  // Keep both SPI devices deselected before mounting SD.
+  pinMode(TFT_CS, OUTPUT);
+  digitalWrite(TFT_CS, HIGH);
+  pinMode(SD_CS_PIN, OUTPUT);
+  digitalWrite(SD_CS_PIN, HIGH);
+
+  // Use the same physical SPI pins as TFT wiring on this board.
+  SPI.begin(TFT_SCLK, TFT_MISO, TFT_MOSI, SD_CS_PIN);
+
+  if (!SD.begin(SD_CS_PIN, SPI, SD_SPI_FREQ_HZ)) {
     tftLogf("[SD] Init failed");
+    tftLogf("[SD] Check card/wiring/CS=%u", SD_CS_PIN);
     return false;
   }
 
