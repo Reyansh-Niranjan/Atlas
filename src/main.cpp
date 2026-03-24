@@ -24,8 +24,7 @@ SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
 static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
 static const uint8_t WIFI_CONNECT_RETRIES = 2;
-static const char *LOGO_PC_PATH = "D:\\assets\\R2_Reyansh-LOGO.jpg";
-static const char *LOGO_SD_PATH = "/R2_Reyansh-LOGO.jpg";
+static const char *LOGO_SD_PATH = "assets/R2_Reyansh-LOGO.jpg";
 
 TFT_eSPI tft = TFT_eSPI(); // Invoke library, pins defined in User_Setup.h
 SafeGithubOTA ota;
@@ -33,6 +32,24 @@ static uint8_t jpegFadeAlpha = 255;
 
 static int logCursorY = 86;
 static const int LOG_LINE_HEIGHT = 18;
+
+static uint8_t wrappedLineCount(const char *text) {
+  if (text == nullptr || text[0] == '\0') {
+    return 1;
+  }
+
+  const int16_t widthPx = tft.textWidth(text);
+  const int16_t screenW = tft.width();
+  if (screenW <= 0) {
+    return 1;
+  }
+
+  int16_t lines = (widthPx + screenW - 1) / screenW;
+  if (lines < 1) {
+    lines = 1;
+  }
+  return static_cast<uint8_t>(lines);
+}
 
 static void tftInitUi() {
   tft.init();
@@ -64,7 +81,10 @@ static void tftLogf(const char *fmt, ...) {
   vsnprintf(line, sizeof(line), fmt, args);
   va_end(args);
 
-  if (logCursorY > tft.height() - 8) {
+  const uint8_t lineCount = wrappedLineCount(line);
+  const int requiredHeight = static_cast<int>(lineCount) * LOG_LINE_HEIGHT;
+
+  if (logCursorY + requiredHeight > tft.height() - 8) {
     tft.fillRect(0, 70, tft.width(), tft.height() - 70, TFT_BLACK);
     logCursorY = 86;
     tft.setCursor(0, logCursorY);
@@ -74,35 +94,73 @@ static void tftLogf(const char *fmt, ...) {
 
   tft.setCursor(0, logCursorY);
   tft.println(line);
-  logCursorY += LOG_LINE_HEIGHT;
+  logCursorY += requiredHeight;
 }
 
 static bool tftJpegOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap) {
-  if (x >= tft.width() || y >= tft.height()) {
-    return false;
-  }
+  const int16_t screenW = tft.width();
+  const int16_t screenH = tft.height();
 
-  static uint16_t blended[16 * 16];
-  const uint16_t pxCount = static_cast<uint16_t>(w * h);
-  if (pxCount > (sizeof(blended) / sizeof(blended[0]))) {
-    tft.pushImage(x, y, w, h, bitmap);
+  if (x >= screenW || y >= screenH || (x + static_cast<int16_t>(w)) <= 0 || (y + static_cast<int16_t>(h)) <= 0) {
     return true;
   }
 
-  for (uint16_t i = 0; i < pxCount; ++i) {
-    const uint16_t src = bitmap[i];
-    uint16_t r = static_cast<uint16_t>((src >> 11) & 0x1F);
-    uint16_t g = static_cast<uint16_t>((src >> 5) & 0x3F);
-    uint16_t b = static_cast<uint16_t>(src & 0x1F);
+  static uint16_t blended[16 * 16];
+  const uint16_t blendedCapacity = static_cast<uint16_t>(sizeof(blended) / sizeof(blended[0]));
 
-    r = static_cast<uint16_t>((r * jpegFadeAlpha) / 255U);
-    g = static_cast<uint16_t>((g * jpegFadeAlpha) / 255U);
-    b = static_cast<uint16_t>((b * jpegFadeAlpha) / 255U);
+  int16_t drawX = x;
+  int16_t drawY = y;
+  int16_t srcX = 0;
+  int16_t srcY = 0;
+  int16_t copyW = static_cast<int16_t>(w);
+  int16_t copyH = static_cast<int16_t>(h);
 
-    blended[i] = static_cast<uint16_t>((r << 11) | (g << 5) | b);
+  if (drawX < 0) {
+    srcX = -drawX;
+    copyW += drawX;
+    drawX = 0;
+  }
+  if (drawY < 0) {
+    srcY = -drawY;
+    copyH += drawY;
+    drawY = 0;
   }
 
-  tft.pushImage(x, y, w, h, blended);
+  if (drawX + copyW > screenW) {
+    copyW = screenW - drawX;
+  }
+  if (drawY + copyH > screenH) {
+    copyH = screenH - drawY;
+  }
+
+  if (copyW <= 0 || copyH <= 0) {
+    return true;
+  }
+
+  const uint16_t pxCount = static_cast<uint16_t>(copyW * copyH);
+  if (pxCount > blendedCapacity) {
+    return false;
+  }
+
+  uint16_t outIndex = 0;
+  for (int16_t row = 0; row < copyH; ++row) {
+    const int16_t srcRow = srcY + row;
+    for (int16_t col = 0; col < copyW; ++col) {
+      const int16_t srcCol = srcX + col;
+      const uint16_t src = bitmap[srcRow * static_cast<int16_t>(w) + srcCol];
+      uint16_t r = static_cast<uint16_t>((src >> 11) & 0x1F);
+      uint16_t g = static_cast<uint16_t>((src >> 5) & 0x3F);
+      uint16_t b = static_cast<uint16_t>(src & 0x1F);
+
+      r = static_cast<uint16_t>((r * jpegFadeAlpha) / 255U);
+      g = static_cast<uint16_t>((g * jpegFadeAlpha) / 255U);
+      b = static_cast<uint16_t>((b * jpegFadeAlpha) / 255U);
+
+      blended[outIndex++] = static_cast<uint16_t>((r << 11) | (g << 5) | b);
+    }
+  }
+
+  tft.pushImage(drawX, drawY, static_cast<uint16_t>(copyW), static_cast<uint16_t>(copyH), blended);
   return true;
 }
 
@@ -125,7 +183,6 @@ static bool initSdCard() {
 }
 
 static bool showLogoFromSdWithFade() {
-  tftLogf("[LOGO] Source: %s", LOGO_PC_PATH);
   tftLogf("[LOGO] SD file: %s", LOGO_SD_PATH);
 
   if (!SD.exists(LOGO_SD_PATH)) {
@@ -133,14 +190,53 @@ static bool showLogoFromSdWithFade() {
     return false;
   }
 
-  TJpgDec.setJpgScale(1);
+  uint16_t jpgW = 0;
+  uint16_t jpgH = 0;
+  if (TJpgDec.getSdJpgSize(&jpgW, &jpgH, LOGO_SD_PATH) != JDR_OK || jpgW == 0 || jpgH == 0) {
+    tftLogf("[LOGO] Failed reading JPG size");
+    return false;
+  }
+
+  const int16_t screenW = tft.width();
+  const int16_t screenH = tft.height();
+
+  // Pick the largest decoder reduction that still covers the display.
+  uint8_t chosenScale = 1;
+  const uint8_t scales[] = {8, 4, 2, 1};
+  for (uint8_t i = 0; i < (sizeof(scales) / sizeof(scales[0])); ++i) {
+    const uint8_t candidate = scales[i];
+    const uint16_t scaledW = static_cast<uint16_t>(jpgW / candidate);
+    const uint16_t scaledH = static_cast<uint16_t>(jpgH / candidate);
+    if (scaledW >= static_cast<uint16_t>(screenW) && scaledH >= static_cast<uint16_t>(screenH)) {
+      chosenScale = candidate;
+      break;
+    }
+  }
+
+  uint16_t scaledW = static_cast<uint16_t>(jpgW / chosenScale);
+  uint16_t scaledH = static_cast<uint16_t>(jpgH / chosenScale);
+  if (scaledW == 0) {
+    scaledW = 1;
+  }
+  if (scaledH == 0) {
+    scaledH = 1;
+  }
+
+  const int16_t drawX = static_cast<int16_t>((screenW - static_cast<int16_t>(scaledW)) / 2);
+  const int16_t drawY = static_cast<int16_t>((screenH - static_cast<int16_t>(scaledH)) / 2);
+
+  tftLogf("[LOGO] JPG: %ux%u", jpgW, jpgH);
+  tftLogf("[LOGO] Scale: 1/%u", chosenScale);
+  tftLogf("[LOGO] Draw at: %d,%d", drawX, drawY);
+
+  TJpgDec.setJpgScale(chosenScale);
   TJpgDec.setSwapBytes(true);
   TJpgDec.setCallback(tftJpegOutput);
 
   tft.fillScreen(TFT_BLACK);
   for (uint8_t alpha = 32; alpha <= 255; alpha = static_cast<uint8_t>(alpha + 32)) {
     jpegFadeAlpha = alpha;
-    TJpgDec.drawSdJpg(0, 0, LOGO_SD_PATH);
+    TJpgDec.drawSdJpg(drawX, drawY, LOGO_SD_PATH);
     delay(60);
     if (alpha == 224) {
       break;
@@ -148,7 +244,7 @@ static bool showLogoFromSdWithFade() {
   }
 
   jpegFadeAlpha = 255;
-  TJpgDec.drawSdJpg(0, 0, LOGO_SD_PATH);
+  TJpgDec.drawSdJpg(drawX, drawY, LOGO_SD_PATH);
   return true;
 }
 
