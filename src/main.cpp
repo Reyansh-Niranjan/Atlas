@@ -1,6 +1,9 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <TFT_eSPI.h>
+#include <SD.h>
+#include <SPI.h>
+#include <TJpg_Decoder.h>
 #include <SafeGithubOTA.h>
 #include <SGO_Provisioning.h>
 #include "secrets.h"
@@ -21,9 +24,12 @@ SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
 static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
 static const uint8_t WIFI_CONNECT_RETRIES = 2;
+static const char *LOGO_PC_PATH = "D:\\assets\\R2_Reyansh-LOGO.jpg";
+static const char *LOGO_SD_PATH = "/R2_Reyansh-LOGO.jpg";
 
 TFT_eSPI tft = TFT_eSPI(); // Invoke library, pins defined in User_Setup.h
 SafeGithubOTA ota;
+static uint8_t jpegFadeAlpha = 255;
 
 static int logCursorY = 86;
 static const int LOG_LINE_HEIGHT = 18;
@@ -69,6 +75,81 @@ static void tftLogf(const char *fmt, ...) {
   tft.setCursor(0, logCursorY);
   tft.println(line);
   logCursorY += LOG_LINE_HEIGHT;
+}
+
+static bool tftJpegOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap) {
+  if (x >= tft.width() || y >= tft.height()) {
+    return false;
+  }
+
+  static uint16_t blended[16 * 16];
+  const uint16_t pxCount = static_cast<uint16_t>(w * h);
+  if (pxCount > (sizeof(blended) / sizeof(blended[0]))) {
+    tft.pushImage(x, y, w, h, bitmap);
+    return true;
+  }
+
+  for (uint16_t i = 0; i < pxCount; ++i) {
+    const uint16_t src = bitmap[i];
+    uint16_t r = static_cast<uint16_t>((src >> 11) & 0x1F);
+    uint16_t g = static_cast<uint16_t>((src >> 5) & 0x3F);
+    uint16_t b = static_cast<uint16_t>(src & 0x1F);
+
+    r = static_cast<uint16_t>((r * jpegFadeAlpha) / 255U);
+    g = static_cast<uint16_t>((g * jpegFadeAlpha) / 255U);
+    b = static_cast<uint16_t>((b * jpegFadeAlpha) / 255U);
+
+    blended[i] = static_cast<uint16_t>((r << 11) | (g << 5) | b);
+  }
+
+  tft.pushImage(x, y, w, h, blended);
+  return true;
+}
+
+static bool initSdCard() {
+  tftLogf("[SD] Initializing");
+  if (!SD.begin()) {
+    tftLogf("[SD] Init failed");
+    return false;
+  }
+
+  const uint8_t cardType = SD.cardType();
+  if (cardType == CARD_NONE) {
+    tftLogf("[SD] No card detected");
+    return false;
+  }
+
+  const uint64_t cardSizeMb = SD.cardSize() / (1024ULL * 1024ULL);
+  tftLogf("[SD] Card size: %lluMB", static_cast<unsigned long long>(cardSizeMb));
+  return true;
+}
+
+static bool showLogoFromSdWithFade() {
+  tftLogf("[LOGO] Source: %s", LOGO_PC_PATH);
+  tftLogf("[LOGO] SD file: %s", LOGO_SD_PATH);
+
+  if (!SD.exists(LOGO_SD_PATH)) {
+    tftLogf("[LOGO] Missing file on SD");
+    return false;
+  }
+
+  TJpgDec.setJpgScale(1);
+  TJpgDec.setSwapBytes(true);
+  TJpgDec.setCallback(tftJpegOutput);
+
+  tft.fillScreen(TFT_BLACK);
+  for (uint8_t alpha = 32; alpha <= 255; alpha = static_cast<uint8_t>(alpha + 32)) {
+    jpegFadeAlpha = alpha;
+    TJpgDec.drawSdJpg(0, 0, LOGO_SD_PATH);
+    delay(60);
+    if (alpha == 224) {
+      break;
+    }
+  }
+
+  jpegFadeAlpha = 255;
+  TJpgDec.drawSdJpg(0, 0, LOGO_SD_PATH);
+  return true;
 }
 
 static void copyBounded(char* dst, size_t dstSize, const char* src) {
@@ -231,7 +312,13 @@ void setup() {
   const SGO_Error checkErr = ota.checkAndUpdate();
   tftLogf("[OTA] check/update: %d", static_cast<int>(checkErr));
   tftLogf("[OTA] result msg: %s", ota.getLastError());
-  tftLogf("[BOOT] Setup complete");
+  tftLogf("[BOOT] Setup Complete");
+
+  if (initSdCard()) {
+    if (!showLogoFromSdWithFade()) {
+      tftLogf("[LOGO] Display skipped");
+    }
+  }
 }
 
 void loop() {

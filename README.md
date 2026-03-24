@@ -5,6 +5,22 @@ Project STATUS:
     V3 WORK in PROGRESS!
     SD and TFT Completed!
 
+## Boot logo from SD
+
+After OTA setup finishes (`Setup Complete`), the firmware now:
+
+- Initializes SD card
+- Loads `/R2_Reyansh-LOGO.jpg` from SD
+- Displays it full-screen on TFT with a fade-in animation
+
+Use this source file on your PC:
+
+- `D:\assets\R2_Reyansh-LOGO.jpg`
+
+Copy it to the SD card root as:
+
+- `/R2_Reyansh-LOGO.jpg`
+
 ## GitHub OTA (SafeGithubOTA library)
 
 This project uses `gibz104/SafeGithubOTA` for OTA updates from GitHub Releases.
