@@ -34,7 +34,7 @@ SafeGithubOTA ota;
 static uint8_t jpegFadeAlpha = 255;
 
 static int logCursorY = 86;
-static const int LOG_LINE_HEIGHT = 18;
+static int logLineHeight = 18;
 
 static uint8_t wrappedLineCount(const char *text) {
   if (text == nullptr || text[0] == '\0') {
@@ -54,7 +54,24 @@ static uint8_t wrappedLineCount(const char *text) {
   return static_cast<uint8_t>(lines);
 }
 
-static void tftInitUi() {
+static void tftInitBootUi() {
+  tft.init();
+  tft.setRotation(1);
+  tft.writecommand(0x36);
+  tft.writedata(0x40);
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextWrap(true, false);
+
+  // Use compact built-in font for early boot diagnostics.
+  tft.setFreeFont(nullptr);
+  tft.setTextFont(1);
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  logCursorY = 12;
+  logLineHeight = 10;
+}
+
+static void tftInitOtaUi() {
   tft.init();
   tft.setRotation(1);
   tft.writecommand(0x36);
@@ -75,6 +92,7 @@ static void tftInitUi() {
 
   tft.setFreeFont(&FreeSansBold9pt7b);
   logCursorY = 86;
+  logLineHeight = 18;
 }
 
 static void tftLogf(const char *fmt, ...) {
@@ -85,14 +103,14 @@ static void tftLogf(const char *fmt, ...) {
   va_end(args);
 
   const uint8_t lineCount = wrappedLineCount(line);
-  const int requiredHeight = static_cast<int>(lineCount) * LOG_LINE_HEIGHT;
+  const int requiredHeight = static_cast<int>(lineCount) * logLineHeight;
 
   if (logCursorY + requiredHeight > tft.height() - 8) {
     tft.fillRect(0, 70, tft.width(), tft.height() - 70, TFT_BLACK);
     logCursorY = 86;
     tft.setCursor(0, logCursorY);
     tft.print("...");
-    logCursorY += LOG_LINE_HEIGHT;
+    logCursorY += logLineHeight;
   }
 
   tft.setCursor(0, logCursorY);
@@ -203,7 +221,7 @@ static bool initSdCard() {
   return true;
 }
 
-static bool showLogoFromSdWithFade() {
+static bool showLogoFromSdCenteredHalfScreen() {
   const char *logoPath = nullptr;
   const bool hasPrimary = SD.exists(LOGO_SD_PATH);
   const bool hasAlt = SD.exists(LOGO_SD_PATH_ALT);
@@ -233,17 +251,30 @@ static bool showLogoFromSdWithFade() {
 
   const int16_t screenW = tft.width();
   const int16_t screenH = tft.height();
+  const uint16_t maxTargetW = static_cast<uint16_t>(screenW / 2);
+  const uint16_t maxTargetH = static_cast<uint16_t>(screenH / 2);
 
-  // Pick the largest decoder reduction that still covers the display.
-  uint8_t chosenScale = 1;
-  const uint8_t scales[] = {8, 4, 2, 1};
+  // Pick the largest decoded image that fits inside 50% of display size.
+  uint8_t chosenScale = 8;
+  const uint8_t scales[] = {1, 2, 4, 8};
+  uint32_t bestArea = 0;
   for (uint8_t i = 0; i < (sizeof(scales) / sizeof(scales[0])); ++i) {
     const uint8_t candidate = scales[i];
-    const uint16_t scaledW = static_cast<uint16_t>(jpgW / candidate);
-    const uint16_t scaledH = static_cast<uint16_t>(jpgH / candidate);
-    if (scaledW >= static_cast<uint16_t>(screenW) && scaledH >= static_cast<uint16_t>(screenH)) {
-      chosenScale = candidate;
-      break;
+    uint16_t scaledW = static_cast<uint16_t>(jpgW / candidate);
+    uint16_t scaledH = static_cast<uint16_t>(jpgH / candidate);
+    if (scaledW == 0) {
+      scaledW = 1;
+    }
+    if (scaledH == 0) {
+      scaledH = 1;
+    }
+
+    if (scaledW <= maxTargetW && scaledH <= maxTargetH) {
+      const uint32_t area = static_cast<uint32_t>(scaledW) * static_cast<uint32_t>(scaledH);
+      if (area >= bestArea) {
+        bestArea = area;
+        chosenScale = candidate;
+      }
     }
   }
 
@@ -268,15 +299,6 @@ static bool showLogoFromSdWithFade() {
   TJpgDec.setCallback(tftJpegOutput);
 
   tft.fillScreen(TFT_BLACK);
-  for (uint8_t alpha = 32; alpha <= 255; alpha = static_cast<uint8_t>(alpha + 32)) {
-    jpegFadeAlpha = alpha;
-    TJpgDec.drawSdJpg(drawX, drawY, logoPath);
-    delay(60);
-    if (alpha == 224) {
-      break;
-    }
-  }
-
   jpegFadeAlpha = 255;
   TJpgDec.drawSdJpg(drawX, drawY, logoPath);
   return true;
@@ -393,8 +415,25 @@ static bool connectWifiWithTimeout() {
 void setup() {
   Serial.begin(115200);
   delay(200);
-  tftInitUi();
+  tftInitBootUi();
   tftLogf("[BOOT] FW version: %s", FW_VERSION);
+
+  const bool sdReady = initSdCard();
+  if (sdReady) {
+    if (showLogoFromSdCenteredHalfScreen()) {
+      delay(1200);
+    } else {
+      tftLogf("[LOGO] Display skipped");
+    }
+  } else {
+    tftLogf("SD FAILED!");
+  }
+
+  tftInitOtaUi();
+  tftLogf("[BOOT] FW version: %s", FW_VERSION);
+  if (!sdReady) {
+    tftLogf("[BOOT] SD unavailable, continuing OTA flow");
+  }
 
   ota.setVersion(FW_VERSION);
   ota.setAutoCheckInterval(6 * 60 * 60); // check every 6 hours
@@ -443,14 +482,6 @@ void setup() {
   tftLogf("[OTA] check/update: %d", static_cast<int>(checkErr));
   tftLogf("[OTA] result msg: %s", ota.getLastError());
   tftLogf("[BOOT] Setup Complete");
-
-  if (initSdCard()) {
-    if (!showLogoFromSdWithFade()) {
-      tftLogf("[LOGO] Display skipped");
-    }
-  } else {
-    tftLogf("SD FAILED!");
-  }
 }
 
 void loop() {
