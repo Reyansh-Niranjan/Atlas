@@ -183,18 +183,30 @@ static bool initSdCard() {
   pinMode(SD_CS_PIN, OUTPUT);
   digitalWrite(SD_CS_PIN, HIGH);
 
-  // Use the same physical SPI pins as TFT wiring on this board.
-  SPI.begin(TFT_SCLK, TFT_MISO, TFT_MOSI, SD_CS_PIN);
+  // Try the same style as the known-working ESP32 SD example first.
+  if (SD.begin(SD_CS_PIN)) {
+    tftLogf("[SD] Mounted (default SPI config)");
+  } else {
+    tftLogf("[SD] Default mount failed, trying explicit SPI pins");
 
-  if (!SD.begin(SD_CS_PIN, SPI, SD_SPI_FREQ_HZ)) {
-    tftLogf("[SD] Init failed");
-    tftLogf("[SD] Check card/wiring/CS=%u", SD_CS_PIN);
-    return false;
+    // Fallback: use the same physical SPI pins as board defaults/TFT wiring.
+    SPI.begin(TFT_SCLK, TFT_MISO, TFT_MOSI, SD_CS_PIN);
+
+    // Conservative frequency improves compatibility with marginal cards/modules.
+    if (!SD.begin(SD_CS_PIN, SPI, SD_SPI_FREQ_HZ)) {
+      tftLogf("[SD] Init failed");
+      tftLogf("[SD] Check card/wiring/CS=%u", SD_CS_PIN);
+      tftLogf("SD FAILED!");
+      return false;
+    }
+
+    tftLogf("[SD] Mounted (explicit SPI config)");
   }
 
   const uint8_t cardType = SD.cardType();
   if (cardType == CARD_NONE) {
     tftLogf("[SD] No card detected");
+    tftLogf("SD FAILED!");
     return false;
   }
 
@@ -435,6 +447,8 @@ void setup() {
     if (!showLogoFromSdWithFade()) {
       tftLogf("[LOGO] Display skipped");
     }
+  } else {
+    tftLogf("SD FAILED!");
   }
 }
 
