@@ -20,4 +20,17 @@ SD CARD:
     MOSI: GPIO11
     SCK: GPIO12
     MISO: GPIO13
-OTHER COMPONENTS' CONNECTIONS WOULD BE PUBLISHED AFTER A WHILE
+INMP441 MICROPHONE (I2S):
+    VDD: 3.3V
+    GND: GND
+    L/R: GND (left channel)
+    WS (Word Select): GPIO15
+    SCK (Serial Clock): GPIO14
+    SD (Serial Data): GPIO16
+MAX98357A AUDIO AMPLIFIER:
+    VDD: 3.3V
+    GND: GND
+    DIN: GPIO19 (I2S Data In)
+    BCLK: GPIO17 (I2S Bit Clock)
+    LRCLK: GPIO18 (I2S Left/Right Clock)
+    GAIN: GND (set max gain)
