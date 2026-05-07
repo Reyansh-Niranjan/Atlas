@@ -39,6 +39,34 @@ jobs:
       - name: Install PlatformIO Core
         run: pip install platformio
 
+      - name: Inject GROQ_API_KEY (CI)
+        shell: bash
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+
+          key = os.environ.get("GROQ_API_KEY", "")
+          def q(v: str) -> str:
+            return v.replace("\\", "\\\\").replace('"', '\\"')
+
+          path = "include/secrets.h"
+          with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+          pattern = r'^#define\s+GROQ_API_KEY\s+".*"\s*$'
+          replacement = f'#define GROQ_API_KEY "{q(key)}"'
+          if re.search(pattern, content, flags=re.MULTILINE):
+            content = re.sub(pattern, replacement, content, flags=re.MULTILINE)
+          else:
+            content = content.rstrip() + "\n" + replacement + "\n"
+
+          with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+          PY
+
       - name: Install dependencies
         run: pio pkg install -e $PIO_ENV
 
