@@ -1,7 +1,9 @@
 #include "groq_stt.h"
 
-#include <WiFiClientSecure.h>
+#include <ArduinoJson.h>
 #include <SD.h>
+#include <WiFiClientSecure.h>
+#include <array>
 #include "secrets.h"
 
 namespace {
@@ -18,100 +20,242 @@ namespace {
 #define GROQ_STT_LANGUAGE "en"
 #endif
 
-static const char *kGroqHost = "api.groq.com";
-static const uint16_t kGroqPort = 443;
+constexpr char kGroqHost[] = "api.groq.com";
+constexpr uint16_t kGroqPort = 443;
+constexpr char kTranscriptionsPath[] = "/openai/v1/audio/transcriptions";
+constexpr char kMultipartBoundary[] = "----EduScraperGroqBoundary7d9f";
+constexpr uint32_t kHttpTimeoutMs = 30000;
+constexpr size_t kJsonDocSize = 2048;
+constexpr size_t kWavHeaderSize = 44;
+constexpr size_t kMultipartChunkSize = 1024;
 
-String extractHeaderValue(const String &response, const char *headerName) {
-  const String key = String("\n") + headerName + ":";
-  const int start = response.indexOf(key);
-  if (start < 0) {
-    return "";
-  }
-
-  int valueStart = start + key.length();
-  while (valueStart < response.length() && (response[valueStart] == ' ' || response[valueStart] == '\t')) {
-    ++valueStart;
-  }
-
-  const int end = response.indexOf('\n', valueStart);
-  if (end < 0) {
-    return response.substring(valueStart);
-  }
-
-  return response.substring(valueStart, end);
+String buildMultipartPreamble(const char *filename) {
+  String preamble;
+  preamble.reserve(320);
+  preamble += "--";
+  preamble += kMultipartBoundary;
+  preamble += "\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n";
+  preamble += GROQ_STT_MODEL;
+  preamble += "\r\n--";
+  preamble += kMultipartBoundary;
+  preamble += "\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\n";
+  preamble += GROQ_STT_LANGUAGE;
+  preamble += "\r\n--";
+  preamble += kMultipartBoundary;
+  preamble += "\r\nContent-Disposition: form-data; name=\"response_format\"\r\n\r\njson\r\n--";
+  preamble += kMultipartBoundary;
+  preamble += "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"";
+  preamble += filename;
+  preamble += "\"\r\nContent-Type: audio/wav\r\n\r\n";
+  return preamble;
 }
 
-String decodeJsonString(const String &json, int quoteStart, int quoteEnd) {
-  String out;
-  out.reserve(quoteEnd - quoteStart);
-
-  bool escaped = false;
-  for (int i = quoteStart; i < quoteEnd; ++i) {
-    const char c = json[i];
-    if (escaped) {
-      switch (c) {
-      case 'n': out += '\n'; break;
-      case 'r': out += '\r'; break;
-      case 't': out += '\t'; break;
-      case '\\': out += '\\'; break;
-      case '"': out += '"'; break;
-      default: out += c; break;
-      }
-      escaped = false;
-      continue;
-    }
-
-    if (c == '\\') {
-      escaped = true;
-      continue;
-    }
-
-    out += c;
-  }
-
-  return out;
+String buildMultipartPostamble() {
+  String postamble;
+  postamble.reserve(sizeof(kMultipartBoundary) + 8);
+  postamble += "\r\n--";
+  postamble += kMultipartBoundary;
+  postamble += "--\r\n";
+  return postamble;
 }
 
-bool extractTextField(const String &jsonBody, String &outText) {
-  const int textKey = jsonBody.indexOf("\"text\"");
-  if (textKey < 0) {
-    return false;
-  }
+void writeLittleEndian32(uint8_t *dest, size_t offset, uint32_t value) {
+  dest[offset + 0] = static_cast<uint8_t>(value & 0xFF);
+  dest[offset + 1] = static_cast<uint8_t>((value >> 8) & 0xFF);
+  dest[offset + 2] = static_cast<uint8_t>((value >> 16) & 0xFF);
+  dest[offset + 3] = static_cast<uint8_t>((value >> 24) & 0xFF);
+}
 
-  const int colon = jsonBody.indexOf(':', textKey);
-  if (colon < 0) {
-    return false;
-  }
+void buildWavHeader(uint8_t header[kWavHeaderSize], uint32_t sampleRate, uint32_t dataBytes) {
+  header[0] = 'R';
+  header[1] = 'I';
+  header[2] = 'F';
+  header[3] = 'F';
+  header[8] = 'W';
+  header[9] = 'A';
+  header[10] = 'V';
+  header[11] = 'E';
+  header[12] = 'f';
+  header[13] = 'm';
+  header[14] = 't';
+  header[15] = ' ';
+  header[16] = 16;
+  header[20] = 1;
+  header[22] = 1;
+  header[32] = 2;
+  header[34] = 16;
+  header[36] = 'd';
+  header[37] = 'a';
+  header[38] = 't';
+  header[39] = 'a';
 
-  int firstQuote = jsonBody.indexOf('"', colon + 1);
-  if (firstQuote < 0) {
-    return false;
-  }
+  const uint32_t riffSize = 36 + dataBytes;
+  writeLittleEndian32(header, 4, riffSize);
+  writeLittleEndian32(header, 24, sampleRate);
+  writeLittleEndian32(header, 28, sampleRate * 2U);
+  writeLittleEndian32(header, 40, dataBytes);
+}
 
-  int i = firstQuote + 1;
-  bool escaped = false;
-  int lastQuote = -1;
-  for (; i < jsonBody.length(); ++i) {
-    const char c = jsonBody[i];
-    if (escaped) {
-      escaped = false;
-      continue;
+bool writeAll(WiFiClientSecure &client, const uint8_t *data, size_t size, String &outError) {
+  size_t offset = 0;
+  while (offset < size) {
+    const size_t written = client.write(data + offset, size - offset);
+    if (written == 0) {
+      outError = "Failed to write request body";
+      return false;
     }
-    if (c == '\\') {
-      escaped = true;
-      continue;
+    offset += written;
+  }
+  return true;
+}
+
+bool writeText(WiFiClientSecure &client, const String &text, String &outError) {
+  return writeAll(client, reinterpret_cast<const uint8_t *>(text.c_str()), text.length(), outError);
+}
+
+bool readStatusLine(WiFiClientSecure &client, String &outStatusLine, String &outError) {
+  outStatusLine = client.readStringUntil('\n');
+  outStatusLine.trim();
+  if (outStatusLine.length() == 0) {
+    outError = "Empty HTTP status line";
+    return false;
+  }
+  return true;
+}
+
+bool skipHttpHeaders(WiFiClientSecure &client, String &outError) {
+  while (client.connected()) {
+    String line = client.readStringUntil('\n');
+    if (line.length() == 0) {
+      outError = "Timed out waiting for HTTP headers";
+      return false;
     }
-    if (c == '"') {
-      lastQuote = i;
-      break;
+    line.trim();
+    if (line.length() == 0) {
+      return true;
     }
   }
 
-  if (lastQuote < 0) {
+  outError = "Connection closed before HTTP headers";
+  return false;
+}
+
+bool parseHttpStatusCode(const String &statusLine, int &outStatusCode) {
+  const int firstSpace = statusLine.indexOf(' ');
+  if (firstSpace < 0) {
     return false;
   }
 
-  outText = decodeJsonString(jsonBody, firstQuote + 1, lastQuote);
+  const int secondSpace = statusLine.indexOf(' ', firstSpace + 1);
+  const String codeText = secondSpace < 0 ? statusLine.substring(firstSpace + 1) : statusLine.substring(firstSpace + 1, secondSpace);
+  outStatusCode = codeText.toInt();
+  return outStatusCode > 0;
+}
+
+bool parseTranscriptionBody(Stream &stream, String &outText, String &outError) {
+  StaticJsonDocument<kJsonDocSize> doc;
+  const DeserializationError err = deserializeJson(doc, stream);
+  if (err) {
+    outError = String("JSON parse failed: ") + err.c_str();
+    return false;
+  }
+
+  const char *text = doc["text"].as<const char *>();
+  if (text == nullptr || text[0] == '\0') {
+    outError = "Missing transcription text";
+    return false;
+  }
+
+  outText = text;
+  return true;
+}
+
+class ScopedClientStop {
+public:
+  explicit ScopedClientStop(WiFiClientSecure &client) : client(client) {}
+  ~ScopedClientStop() { client.stop(); }
+
+private:
+  WiFiClientSecure &client;
+};
+
+class ScopedFileClose {
+public:
+  explicit ScopedFileClose(File &file) : file(file) {}
+  ~ScopedFileClose() {
+    if (file) {
+      file.close();
+    }
+  }
+
+private:
+  File &file;
+};
+
+template <typename BodyWriter>
+bool executeTranscriptionRequest(const String &preamble,
+                                 size_t bodyBytes,
+                                 BodyWriter &&writeBody,
+                                 String &outText,
+                                 String &outError) {
+  WiFiClientSecure client;
+  ScopedClientStop clientGuard(client);
+  client.setInsecure();
+  client.setTimeout(kHttpTimeoutMs);
+
+  if (!client.connect(kGroqHost, kGroqPort)) {
+    outError = "TLS connect failed to api.groq.com";
+    return false;
+  }
+
+  const String postamble = buildMultipartPostamble();
+  const size_t contentLength = preamble.length() + bodyBytes + postamble.length();
+
+  client.printf("POST %s HTTP/1.1\r\n", kTranscriptionsPath);
+  client.printf("Host: %s\r\n", kGroqHost);
+  client.printf("Authorization: Bearer %s\r\n", GROQ_API_KEY);
+  client.printf("Content-Type: multipart/form-data; boundary=%s\r\n", kMultipartBoundary);
+  client.printf("Content-Length: %u\r\n", static_cast<unsigned>(contentLength));
+  client.print("Connection: close\r\n\r\n");
+
+  if (!writeText(client, preamble, outError)) {
+    return false;
+  }
+
+  if (!writeBody(client, outError)) {
+    return false;
+  }
+
+  if (!writeText(client, postamble, outError)) {
+    return false;
+  }
+
+  String statusLine;
+  if (!readStatusLine(client, statusLine, outError)) {
+    return false;
+  }
+
+  int statusCode = 0;
+  if (!parseHttpStatusCode(statusLine, statusCode)) {
+    outError = "Unable to parse HTTP status line: " + statusLine;
+    return false;
+  }
+
+  if (!skipHttpHeaders(client, outError)) {
+    return false;
+  }
+
+  if (statusCode != 200) {
+    String body = client.readString();
+    body.trim();
+    outError = "HTTP error: " + statusLine + " body=" + body;
+    return false;
+  }
+
+  if (!parseTranscriptionBody(client, outText, outError)) {
+    return false;
+  }
+
   return true;
 }
 
@@ -135,121 +279,27 @@ bool transcribeWavPcm16(const int16_t *samples,
     outError = "No PCM samples provided";
     return false;
   }
-
-  const String boundary = "----EduScraperGroqBoundary7d9f";
-  const String preamble =
-      "--" + boundary + "\r\n"
-      "Content-Disposition: form-data; name=\"model\"\r\n\r\n"
-      GROQ_STT_MODEL "\r\n"
-      "--" + boundary + "\r\n"
-      "Content-Disposition: form-data; name=\"language\"\r\n\r\n"
-      GROQ_STT_LANGUAGE "\r\n"
-      "--" + boundary + "\r\n"
-      "Content-Disposition: form-data; name=\"response_format\"\r\n\r\n"
-      "json\r\n"
-      "--" + boundary + "\r\n"
-      "Content-Disposition: form-data; name=\"file\"; filename=\"live.wav\"\r\n"
-      "Content-Type: audio/wav\r\n\r\n";
-  const String postamble = "\r\n--" + boundary + "--\r\n";
+  if (sampleCount > (UINT32_MAX / sizeof(int16_t))) {
+    outError = "PCM sample count is too large";
+    return false;
+  }
 
   const uint32_t dataBytes = static_cast<uint32_t>(sampleCount * sizeof(int16_t));
-  uint8_t wavHeader[44] = {
-      'R', 'I', 'F', 'F',
-      0, 0, 0, 0,
-      'W', 'A', 'V', 'E',
-      'f', 'm', 't', ' ',
-      16, 0, 0, 0,
-      1, 0,
-      1, 0,
-      0, 0, 0, 0,
-      0, 0, 0, 0,
-      2, 0,
-      16, 0,
-      'd', 'a', 't', 'a',
-      0, 0, 0, 0,
-  };
+  std::array<uint8_t, kWavHeaderSize> wavHeader{};
+  buildWavHeader(wavHeader.data(), sampleRate, dataBytes);
 
-  const uint32_t riffSize = 36 + dataBytes;
-  wavHeader[4] = static_cast<uint8_t>(riffSize & 0xFF);
-  wavHeader[5] = static_cast<uint8_t>((riffSize >> 8) & 0xFF);
-  wavHeader[6] = static_cast<uint8_t>((riffSize >> 16) & 0xFF);
-  wavHeader[7] = static_cast<uint8_t>((riffSize >> 24) & 0xFF);
-
-  wavHeader[24] = static_cast<uint8_t>(sampleRate & 0xFF);
-  wavHeader[25] = static_cast<uint8_t>((sampleRate >> 8) & 0xFF);
-  wavHeader[26] = static_cast<uint8_t>((sampleRate >> 16) & 0xFF);
-  wavHeader[27] = static_cast<uint8_t>((sampleRate >> 24) & 0xFF);
-
-  const uint32_t byteRate = sampleRate * 2;
-  wavHeader[28] = static_cast<uint8_t>(byteRate & 0xFF);
-  wavHeader[29] = static_cast<uint8_t>((byteRate >> 8) & 0xFF);
-  wavHeader[30] = static_cast<uint8_t>((byteRate >> 16) & 0xFF);
-  wavHeader[31] = static_cast<uint8_t>((byteRate >> 24) & 0xFF);
-
-  wavHeader[40] = static_cast<uint8_t>(dataBytes & 0xFF);
-  wavHeader[41] = static_cast<uint8_t>((dataBytes >> 8) & 0xFF);
-  wavHeader[42] = static_cast<uint8_t>((dataBytes >> 16) & 0xFF);
-  wavHeader[43] = static_cast<uint8_t>((dataBytes >> 24) & 0xFF);
-
-  const size_t contentLength = preamble.length() + sizeof(wavHeader) + dataBytes + postamble.length();
-
-  WiFiClientSecure client;
-  client.setInsecure();
-  if (!client.connect(kGroqHost, kGroqPort)) {
-    outError = "TLS connect failed to api.groq.com";
-    return false;
-  }
-
-  client.printf("POST /openai/v1/audio/transcriptions HTTP/1.1\r\n");
-  client.printf("Host: %s\r\n", kGroqHost);
-  client.printf("Authorization: Bearer %s\r\n", GROQ_API_KEY);
-  client.printf("Content-Type: multipart/form-data; boundary=%s\r\n", boundary.c_str());
-  client.printf("Content-Length: %u\r\n", static_cast<unsigned>(contentLength));
-  client.print("Connection: close\r\n\r\n");
-
-  client.print(preamble);
-  client.write(wavHeader, sizeof(wavHeader));
-  client.write(reinterpret_cast<const uint8_t *>(samples), dataBytes);
-  client.print(postamble);
-
-  const uint32_t timeoutMs = millis() + 30000;
-  while (!client.available() && client.connected() && millis() < timeoutMs) {
-    delay(10);
-  }
-
-  String response;
-  response.reserve(4096);
-  while (client.connected() || client.available()) {
-    while (client.available()) {
-      response += static_cast<char>(client.read());
-    }
-    delay(1);
-  }
-  client.stop();
-
-  if (!response.startsWith("HTTP/1.1 200")) {
-    const String statusLine = response.substring(0, response.indexOf('\n'));
-    const int bodyPos = response.indexOf("\r\n\r\n");
-    String body = bodyPos >= 0 ? response.substring(bodyPos + 4) : "";
-    body.trim();
-    outError = "HTTP error: " + statusLine + " body=" + body;
-    return false;
-  }
-
-  const int bodyPos = response.indexOf("\r\n\r\n");
-  if (bodyPos < 0) {
-    outError = "No HTTP body in response";
-    return false;
-  }
-
-  String body = response.substring(bodyPos + 4);
-  body.trim();
-  if (!extractTextField(body, outText)) {
-    outError = "Could not parse transcription text from response";
-    return false;
-  }
-
-  return true;
+  const String preamble = buildMultipartPreamble("live.wav");
+  return executeTranscriptionRequest(
+      preamble,
+      sizeof(wavHeader) + dataBytes,
+      [&](WiFiClientSecure &client, String &writeError) {
+        if (!writeAll(client, wavHeader.data(), wavHeader.size(), writeError)) {
+          return false;
+        }
+        return writeAll(client, reinterpret_cast<const uint8_t *>(samples), dataBytes, writeError);
+      },
+      outText,
+      outError);
 }
 
 bool transcribeWavFromSd(const char *sdPath, String &outText, String &outError) {
@@ -260,6 +310,10 @@ bool transcribeWavFromSd(const char *sdPath, String &outText, String &outError) 
     outError = "GROQ_API_KEY is empty in secrets.h";
     return false;
   }
+  if (sdPath == nullptr || sdPath[0] == '\0') {
+    outError = "SD path is empty";
+    return false;
+  }
 
   File wavFile = SD.open(sdPath, FILE_READ);
   if (!wavFile) {
@@ -267,94 +321,29 @@ bool transcribeWavFromSd(const char *sdPath, String &outText, String &outError) 
     return false;
   }
 
-  const String boundary = "----EduScraperGroqBoundary7d9f";
-  const String preamble =
-      "--" + boundary + "\r\n"
-      "Content-Disposition: form-data; name=\"model\"\r\n\r\n"
-      GROQ_STT_MODEL "\r\n"
-      "--" + boundary + "\r\n"
-      "Content-Disposition: form-data; name=\"language\"\r\n\r\n"
-      GROQ_STT_LANGUAGE "\r\n"
-      "--" + boundary + "\r\n"
-      "Content-Disposition: form-data; name=\"response_format\"\r\n\r\n"
-      "json\r\n"
-      "--" + boundary + "\r\n"
-      "Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n"
-      "Content-Type: audio/wav\r\n\r\n";
+  ScopedFileClose wavCloser(wavFile);
 
-  const String postamble = "\r\n--" + boundary + "--\r\n";
-
-  const size_t contentLength = preamble.length() + static_cast<size_t>(wavFile.size()) + postamble.length();
-
-  WiFiClientSecure client;
-  client.setInsecure();
-
-  if (!client.connect(kGroqHost, kGroqPort)) {
-    outError = "TLS connect failed to api.groq.com";
-    wavFile.close();
-    return false;
-  }
-
-  client.printf("POST /openai/v1/audio/transcriptions HTTP/1.1\r\n");
-  client.printf("Host: %s\r\n", kGroqHost);
-  client.printf("Authorization: Bearer %s\r\n", GROQ_API_KEY);
-  client.printf("Content-Type: multipart/form-data; boundary=%s\r\n", boundary.c_str());
-  client.printf("Content-Length: %u\r\n", static_cast<unsigned>(contentLength));
-  client.print("Connection: close\r\n\r\n");
-
-  client.print(preamble);
-
-  uint8_t buf[1024];
-  while (wavFile.available()) {
-    const size_t readBytes = wavFile.read(buf, sizeof(buf));
-    if (readBytes == 0) {
-      break;
-    }
-    client.write(buf, readBytes);
-  }
-  wavFile.close();
-
-  client.print(postamble);
-
-  const uint32_t timeoutMs = millis() + 30000;
-  while (!client.available() && client.connected() && millis() < timeoutMs) {
-    delay(10);
-  }
-
-  String response;
-  response.reserve(4096);
-  while (client.connected() || client.available()) {
-    while (client.available()) {
-      response += static_cast<char>(client.read());
-    }
-    delay(1);
-  }
-  client.stop();
-
-  if (!response.startsWith("HTTP/1.1 200")) {
-    const String statusLine = response.substring(0, response.indexOf('\n'));
-    const int bodyPos = response.indexOf("\r\n\r\n");
-    String body = bodyPos >= 0 ? response.substring(bodyPos + 4) : "";
-    body.trim();
-    outError = "HTTP error: " + statusLine + " body=" + body;
-    return false;
-  }
-
-  const int bodyPos = response.indexOf("\r\n\r\n");
-  if (bodyPos < 0) {
-    outError = "No HTTP body in response";
-    return false;
-  }
-
-  String body = response.substring(bodyPos + 4);
-  body.trim();
-
-  if (!extractTextField(body, outText)) {
-    outError = "Could not parse transcription text from response";
-    return false;
-  }
-
-  return true;
+  const String preamble = buildMultipartPreamble("audio.wav");
+  const size_t bodyBytes = static_cast<size_t>(wavFile.size());
+  return executeTranscriptionRequest(
+      preamble,
+      bodyBytes,
+      [&](WiFiClientSecure &client, String &writeError) {
+        std::array<uint8_t, kMultipartChunkSize> buffer{};
+        while (wavFile.available()) {
+          const size_t readBytes = wavFile.read(buffer.data(), buffer.size());
+          if (readBytes == 0) {
+            writeError = "Failed while reading SD WAV file";
+            return false;
+          }
+          if (!writeAll(client, buffer.data(), readBytes, writeError)) {
+            return false;
+          }
+        }
+        return true;
+      },
+      outText,
+      outError);
 }
 
 } // namespace GroqStt

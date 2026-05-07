@@ -1,30 +1,32 @@
 #include "live_mic_stt.h"
 
+#include <algorithm>
+#include <array>
 #include <driver/i2s.h>
 #include "groq_stt.h"
 
 namespace {
 
-static const i2s_port_t kI2sPort = I2S_NUM_0;
-static const uint32_t kSampleRateHz = 16000;
-static const uint8_t kWindowSeconds = 2;
-static const size_t kWindowSamples = kSampleRateHz * kWindowSeconds;
+constexpr i2s_port_t kI2sPort = I2S_NUM_0;
+constexpr uint32_t kSampleRateHz = 16000;
+constexpr uint8_t kWindowSeconds = 2;
+constexpr size_t kWindowSamples = kSampleRateHz * kWindowSeconds;
+constexpr size_t kI2sChunkSamples = 256;
+constexpr int kSampleShiftBits = 14;
+constexpr uint16_t kI2sDmaBufCount = 8;
+constexpr uint16_t kI2sDmaBufLen = 256;
 
 // INMP441 pin mapping from project wiring.
-static const int kI2sBclkPin = 14;
-static const int kI2sWsPin = 15;
-static const int kI2sDataInPin = 16;
+constexpr int kI2sBclkPin = 14;
+constexpr int kI2sWsPin = 15;
+constexpr int kI2sDataInPin = 16;
 
-int16_t g_pcmBuffer[kWindowSamples];
+static_assert(kWindowSamples > 0, "Window must contain samples");
+
+std::array<int16_t, kWindowSamples> g_pcmBuffer{};
 bool g_i2sReady = false;
 
-} // namespace
-
-namespace LiveMicStt {
-
-bool begin(String &outError) {
-  outError = "";
-
+bool installI2s(String &outError) {
   const i2s_config_t i2sConfig = {
       .mode = static_cast<i2s_mode_t>(I2S_MODE_MASTER | I2S_MODE_RX),
       .sample_rate = static_cast<int>(kSampleRateHz),
@@ -32,8 +34,8 @@ bool begin(String &outError) {
       .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
       .communication_format = I2S_COMM_FORMAT_STAND_I2S,
       .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-      .dma_buf_count = 8,
-      .dma_buf_len = 256,
+      .dma_buf_count = kI2sDmaBufCount,
+      .dma_buf_len = kI2sDmaBufLen,
       .use_apll = false,
       .tx_desc_auto_clear = false,
       .fixed_mclk = 0,
@@ -60,6 +62,23 @@ bool begin(String &outError) {
   }
 
   i2s_zero_dma_buffer(kI2sPort);
+  return true;
+}
+
+} // namespace
+
+namespace LiveMicStt {
+
+bool begin(String &outError) {
+  outError = "";
+  if (g_i2sReady) {
+    return true;
+  }
+
+  if (!installI2s(outError)) {
+    return false;
+  }
+
   g_i2sReady = true;
   return true;
 }
@@ -74,24 +93,26 @@ bool transcribeWindow(String &outText, String &outError) {
   }
 
   size_t captured = 0;
-  int32_t i2sRaw[256];
+  std::array<int32_t, kI2sChunkSamples> i2sRaw{};
 
   while (captured < kWindowSamples) {
     size_t bytesRead = 0;
-    const esp_err_t readErr = i2s_read(kI2sPort, i2sRaw, sizeof(i2sRaw), &bytesRead, portMAX_DELAY);
+    const esp_err_t readErr = i2s_read(kI2sPort, i2sRaw.data(), i2sRaw.size() * sizeof(i2sRaw[0]), &bytesRead, portMAX_DELAY);
     if (readErr != ESP_OK) {
       outError = String("i2s_read failed: ") + String(static_cast<int>(readErr));
       return false;
     }
 
-    const size_t samplesRead = bytesRead / sizeof(int32_t);
-    for (size_t i = 0; i < samplesRead && captured < kWindowSamples; ++i) {
-      const int32_t sample32 = i2sRaw[i];
-      g_pcmBuffer[captured++] = static_cast<int16_t>(sample32 >> 14);
+    const size_t samplesRead = bytesRead / sizeof(i2sRaw[0]);
+    const size_t remaining = kWindowSamples - captured;
+    const size_t samplesToCopy = std::min(samplesRead, remaining);
+    for (size_t i = 0; i < samplesToCopy; ++i) {
+      g_pcmBuffer[captured + i] = static_cast<int16_t>(i2sRaw[i] >> kSampleShiftBits);
     }
+    captured += samplesToCopy;
   }
 
-  return GroqStt::transcribeWavPcm16(g_pcmBuffer, captured, kSampleRateHz, outText, outError);
+  return GroqStt::transcribeWavPcm16(g_pcmBuffer.data(), captured, kSampleRateHz, outText, outError);
 }
 
 } // namespace LiveMicStt
