@@ -8,11 +8,29 @@
 namespace {
 
 constexpr i2s_port_t kI2sPort = I2S_NUM_0;
-constexpr uint32_t kSampleRateHz = 16000;
-constexpr uint8_t kWindowSeconds = 2;
-constexpr size_t kWindowSamples = kSampleRateHz * kWindowSeconds;
+#ifndef LIVE_STT_SAMPLE_RATE_HZ
+#define LIVE_STT_SAMPLE_RATE_HZ 32000
+#endif
+
+#ifndef LIVE_STT_WINDOW_SECONDS
+#define LIVE_STT_WINDOW_SECONDS 2
+#endif
+
+#ifndef LIVE_STT_GAIN_Q8
+#define LIVE_STT_GAIN_Q8 256
+#endif
+
+constexpr uint32_t kSampleRateHz = LIVE_STT_SAMPLE_RATE_HZ;
+constexpr uint8_t kWindowSeconds = LIVE_STT_WINDOW_SECONDS;
+constexpr size_t kWindowSamples = static_cast<size_t>(kSampleRateHz) * kWindowSeconds;
 constexpr size_t kI2sChunkSamples = 256;
-constexpr int kSampleShiftBits = 14;
+constexpr int kI2sBitsPerSample = 32;
+constexpr int kMicValidBits = 24;
+constexpr int kPcmBits = 16;
+constexpr int kI2sToMicShift = kI2sBitsPerSample - kMicValidBits;
+constexpr int kMicToPcmShift = kMicValidBits - kPcmBits;
+constexpr int kDcFilterShift = 12;
+constexpr int kGainQ8 = LIVE_STT_GAIN_Q8;
 constexpr uint16_t kI2sDmaBufCount = 8;
 constexpr uint16_t kI2sDmaBufLen = 256;
 
@@ -36,7 +54,7 @@ bool installI2s(String &outError) {
       .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
       .dma_buf_count = kI2sDmaBufCount,
       .dma_buf_len = kI2sDmaBufLen,
-      .use_apll = false,
+      .use_apll = true,
       .tx_desc_auto_clear = false,
       .fixed_mclk = 0,
   };
@@ -94,6 +112,7 @@ bool transcribeWindow(String &outText, String &outError) {
 
   size_t captured = 0;
   std::array<int32_t, kI2sChunkSamples> i2sRaw{};
+  int32_t dcEstimate = 0;
 
   while (captured < kWindowSamples) {
     size_t bytesRead = 0;
@@ -107,7 +126,18 @@ bool transcribeWindow(String &outText, String &outError) {
     const size_t remaining = kWindowSamples - captured;
     const size_t samplesToCopy = std::min(samplesRead, remaining);
     for (size_t i = 0; i < samplesToCopy; ++i) {
-      g_pcmBuffer[captured + i] = static_cast<int16_t>(i2sRaw[i] >> kSampleShiftBits);
+      int32_t sample = i2sRaw[i] >> kI2sToMicShift;
+      // Remove slow-moving DC bias before scaling down to 16-bit PCM.
+      dcEstimate += (sample - dcEstimate) >> kDcFilterShift;
+      sample -= dcEstimate;
+      sample = static_cast<int32_t>((static_cast<int64_t>(sample) * kGainQ8) >> 8);
+      sample >>= kMicToPcmShift;
+      if (sample > 32767) {
+        sample = 32767;
+      } else if (sample < -32768) {
+        sample = -32768;
+      }
+      g_pcmBuffer[captured + i] = static_cast<int16_t>(sample);
     }
     captured += samplesToCopy;
   }
