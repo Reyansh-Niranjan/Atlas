@@ -131,7 +131,7 @@ bool transcribeWindow(String &outText, String &outError) {
       int32_t sample = i2sRaw[i] >> kI2sToMicShift;
       dcEstimate += (sample - dcEstimate) >> kDcFilterShift;
       sample -= dcEstimate;
-      sample = (sample * kGainQ8) >> 8;
+sample = static_cast<int32_t>((static_cast<int64_t>(sample) * kGainQ8) >> 8);
       sample >>= kMicToPcmShift;
       // Fast clamp using bit manipulation
       sample = (sample > 32767) ? 32767 : ((sample < -32768) ? -32768 : sample);
