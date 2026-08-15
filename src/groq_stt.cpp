@@ -98,9 +98,12 @@ void buildWavHeader(uint8_t header[kWavHeaderSize], uint32_t sampleRate, uint32_
 
 bool writeAll(WiFiClientSecure &client, const uint8_t *data, size_t size, String &outError) {
   size_t offset = 0;
+  constexpr size_t kMaxChunkSize = 256;
   while (offset < size) {
-    const size_t written = client.write(data + offset, size - offset);
-    if (written == 0) {
+    const size_t remaining = size - offset;
+    const size_t chunkSize = (remaining > kMaxChunkSize) ? kMaxChunkSize : remaining;
+    const size_t written = client.write(data + offset, chunkSize);
+    if (written == 0 || written != chunkSize) {
       outError = "Failed to write request body";
       return false;
     }
@@ -116,7 +119,7 @@ bool writeText(WiFiClientSecure &client, const String &text, String &outError) {
 bool readStatusLine(WiFiClientSecure &client, String &outStatusLine, String &outError) {
   outStatusLine = client.readStringUntil('\n');
   outStatusLine.trim();
-  if (outStatusLine.length() == 0) {
+  if (outStatusLine.isEmpty()) {
     outError = "Empty HTTP status line";
     return false;
   }
@@ -124,19 +127,24 @@ bool readStatusLine(WiFiClientSecure &client, String &outStatusLine, String &out
 }
 
 bool skipHttpHeaders(WiFiClientSecure &client, String &outError) {
-  while (client.connected()) {
+  constexpr uint32_t kHeaderTimeoutMs = 5000;
+  const uint32_t startTime = millis();
+  while (client.connected() && (millis() - startTime < kHeaderTimeoutMs)) {
     String line = client.readStringUntil('\n');
-    if (line.length() == 0) {
-      outError = "Timed out waiting for HTTP headers";
-      return false;
+    if (line.isEmpty()) {
+      if (!client.connected()) {
+        outError = "Connection closed before HTTP headers";
+        return false;
+      }
+      continue;
     }
     line.trim();
-    if (line.length() == 0) {
+    if (line.isEmpty()) {
       return true;
     }
   }
 
-  outError = "Connection closed before HTTP headers";
+  outError = "Timed out waiting for HTTP headers";
   return false;
 }
 
@@ -166,7 +174,7 @@ bool parseTranscriptionBody(Stream &stream, String &outText, String &outError) {
     return false;
   }
 
-  outText = text;
+  outText = String(text);
   return true;
 }
 

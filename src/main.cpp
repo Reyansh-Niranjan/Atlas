@@ -63,6 +63,7 @@ void initLiveStt() {
 }
 
 void serviceLiveStt(uint32_t nowMs) {
+  // Use unsigned subtraction to avoid overflow issues with millis()
   if (!state.liveSttReady || (nowMs - state.lastSttMs) < AppConfig::kSttIntervalMs) {
     return;
   }
@@ -127,7 +128,10 @@ void setup() {
 
 void loop() {
   ota.loop();
-  serviceLiveStt(millis());
+  
+  // Cache millis() to avoid multiple calls
+  const uint32_t nowMs = millis();
+  serviceLiveStt(nowMs);
 
   delay(AppConfig::kLoopDelayMs);
 }
