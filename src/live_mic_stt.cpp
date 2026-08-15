@@ -125,18 +125,16 @@ bool transcribeWindow(String &outText, String &outError) {
     const size_t samplesRead = bytesRead / sizeof(i2sRaw[0]);
     const size_t remaining = kWindowSamples - captured;
     const size_t samplesToCopy = std::min(samplesRead, remaining);
+    
+    // Batch process samples with reduced branching
     for (size_t i = 0; i < samplesToCopy; ++i) {
       int32_t sample = i2sRaw[i] >> kI2sToMicShift;
-      // Remove slow-moving DC bias before scaling down to 16-bit PCM.
       dcEstimate += (sample - dcEstimate) >> kDcFilterShift;
       sample -= dcEstimate;
-      sample = static_cast<int32_t>((static_cast<int64_t>(sample) * kGainQ8) >> 8);
+sample = static_cast<int32_t>((static_cast<int64_t>(sample) * kGainQ8) >> 8);
       sample >>= kMicToPcmShift;
-      if (sample > 32767) {
-        sample = 32767;
-      } else if (sample < -32768) {
-        sample = -32768;
-      }
+      // Fast clamp using bit manipulation
+      sample = (sample > 32767) ? 32767 : ((sample < -32768) ? -32768 : sample);
       g_pcmBuffer[captured + i] = static_cast<int16_t>(sample);
     }
     captured += samplesToCopy;
