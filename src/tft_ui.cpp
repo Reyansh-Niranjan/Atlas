@@ -39,7 +39,7 @@ void initDisplay(TFT_eSPI &tft) {
   tft.setTextWrap(true, false);
 }
 
-uint8_t estimateWrappedLines(const TFT_eSPI &tft, const char *text) {
+uint8_t estimateWrappedLines(TFT_eSPI &tft, const char *text) {
   if (text == nullptr || text[0] == '\0') {
     return 1;
   }
