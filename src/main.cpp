@@ -1,6 +1,6 @@
 #include <Arduino.h>
-#include <SafeGithubOTA.h>
-#include "ota.h"
+// #include <SafeGithubOTA.h>
+// #include "ota.h"
 #include "tft_ui.h"
 #include "live_mic_stt.h"
 
@@ -25,7 +25,7 @@ struct AppState {
   uint32_t lastSttMs = 0;
 };
 
-SafeGithubOTA ota;
+// SafeGithubOTA ota;
 TftUi ui;
 AppState state;
 
@@ -85,13 +85,13 @@ void serviceLiveStt(uint32_t nowMs) {
   ui.setStatusLine("STT: Error");
 }
 
-void otaUiLog(const char *message) {
-  ui.logf("%s", message);
-}
+// void otaUiLog(const char *message) {
+//   ui.logf("%s", message);
+// }
 
-void otaUiProgress(uint8_t pct) {
-  ui.setStatusLinef("OTA: %u%%", pct);
-}
+// void otaUiProgress(uint8_t pct) {
+//   ui.setStatusLinef("OTA: %u%%", pct);
+// }
 
 } // namespace
 
@@ -103,22 +103,22 @@ void setup() {
 
   const bool sdReady = initStorageAndLogo();
 
-  ui.initOtaUi();
-  logFirmwareVersion();
-  ui.setStatusLine("OTA: init");
-  if (!sdReady) {
-    ui.logf("[BOOT] SD unavailable, continuing OTA flow");
-  }
+  // ui.initOtaUi();
+  // logFirmwareVersion();
+  // ui.setStatusLine("OTA: init");
+  // if (!sdReady) {
+  //   ui.logf("[BOOT] SD unavailable, continuing OTA flow");
+  // }
 
-  if (!OtaFlow::startAndConnectWifi(ota, FW_VERSION, otaUiLog, otaUiProgress)) {
-    ui.logf("[BOOT] OTA start/connect failed; continuing main program");
-    ui.setStatusLine("OTA: offline");
-  } else if (!OtaFlow::checkReleaseAndFlash(ota)) {
-    ui.logf("[BOOT] OTA check failed; continuing main program");
-    ui.setStatusLine("OTA: check failed");
-  } else {
-    ui.setStatusLine("OTA: up to date");
-  }
+  // if (!OtaFlow::startAndConnectWifi(ota, FW_VERSION, otaUiLog, otaUiProgress)) {
+  //   ui.logf("[BOOT] OTA start/connect failed; continuing main program");
+  //   ui.setStatusLine("OTA: offline");
+  // } else if (!OtaFlow::checkReleaseAndFlash(ota)) {
+  //   ui.logf("[BOOT] OTA check failed; continuing main program");
+  //   ui.setStatusLine("OTA: check failed");
+  // } else {
+  //   ui.setStatusLine("OTA: up to date");
+  // }
 
   ui.logf("[BOOT] Setup Complete");
   ui.setStatusLine("STT: init");
@@ -126,7 +126,7 @@ void setup() {
 }
 
 void loop() {
-  ota.loop();
+  // ota.loop();
   serviceLiveStt(millis());
 
   delay(AppConfig::kLoopDelayMs);

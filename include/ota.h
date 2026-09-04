@@ -14,6 +14,7 @@ SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 #define OTA_GITHUB_PAT ""
 #endif
 
+/*
 namespace OtaFlow {
 
 constexpr uint32_t kWifiConnectTimeoutMs = 20000;
@@ -174,3 +175,4 @@ inline bool checkReleaseAndFlash(SafeGithubOTA &ota) {
 }
 
 } // namespace OtaFlow
+*/
