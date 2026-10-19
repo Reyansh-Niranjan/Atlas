@@ -3,7 +3,8 @@ With a little bit of beginner juice, geek for geeks and youtube this is made pos
 
 Project STATUS:
     V3 WORK in PROGRESS!
-    SD and TFT Completed!
+    SD, TFT, Microphone, amp done!
+    Remaining: Mechanical Switches, speaker to AMP connection (1-2 days)
 
 ## Boot logo from SD
 
