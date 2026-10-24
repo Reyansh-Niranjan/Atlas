@@ -1,4 +1,0 @@
-[wokwi]
-version = 1
-firmware = ".pio/build/atlas/firmware.bin"
-elf = ".pio/build/atlas/firmware.elf"

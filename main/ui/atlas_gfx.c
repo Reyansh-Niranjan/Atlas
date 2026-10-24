@@ -1,12 +1,12 @@
 /**
- * @file gfx.c
- * @brief Embedded 2D graphics engine and 5x7 ASCII font renderer
+ * @file atlas_gfx.c
+ * @brief High-Performance Embedded 2D Graphics and Font Engine for Atlas UI
  */
-#include "gfx.h"
+#include "atlas_gfx.h"
 #include <string.h>
 #include <stdlib.h>
 
-/* Standard 5x7 font glyph table (ASCII 32 ' ' to 126 '~') */
+/* Standard 5x7 ASCII font glyph table (ASCII 32 ' ' to 126 '~') */
 static const uint8_t font5x7[95][5] = {
     {0x00, 0x00, 0x00, 0x00, 0x00}, /*   */
     {0x00, 0x00, 0x5F, 0x00, 0x00}, /* ! */
@@ -105,104 +105,130 @@ static const uint8_t font5x7[95][5] = {
     {0x08, 0x08, 0x2A, 0x1C, 0x08}  /* ~ */
 };
 
-void gfx_clear(uint16_t *fb, uint16_t color)
+void atlas_gfx_clear(uint16_t *fb, uint16_t color)
 {
-    for (int i = 0; i < LCD_W * LCD_H; i++) {
-        fb[i] = color;
+    if (!fb) return;
+    if (color == 0) {
+        memset(fb, 0, ATLAS_LCD_BYTES);
+    } else {
+        for (int i = 0; i < ATLAS_LCD_PIXELS; i++) {
+            fb[i] = color;
+        }
     }
 }
 
-void gfx_draw_pixel(uint16_t *fb, int x, int y, uint16_t color)
+void atlas_gfx_fill_rect(uint16_t *fb, int x, int y, int w, int h, uint16_t color)
 {
-    if (x < 0 || x >= LCD_W || y < 0 || y >= LCD_H) return;
-    fb[y * LCD_W + x] = color;
-}
-
-void gfx_fill_rect(uint16_t *fb, int x, int y, int w, int h, uint16_t color)
-{
-    if (x >= LCD_W || y >= LCD_H || w <= 0 || h <= 0) return;
+    if (!fb || x >= ATLAS_LCD_WIDTH || y >= ATLAS_LCD_HEIGHT || w <= 0 || h <= 0) return;
     int x1 = (x < 0) ? 0 : x;
     int y1 = (y < 0) ? 0 : y;
-    int x2 = (x + w > LCD_W) ? LCD_W : (x + w);
-    int y2 = (y + h > LCD_H) ? LCD_H : (y + h);
+    int x2 = (x + w > ATLAS_LCD_WIDTH) ? ATLAS_LCD_WIDTH : (x + w);
+    int y2 = (y + h > ATLAS_LCD_HEIGHT) ? ATLAS_LCD_HEIGHT : (y + h);
 
     for (int j = y1; j < y2; j++) {
-        int row = j * LCD_W;
+        int row = j * ATLAS_LCD_WIDTH;
         for (int i = x1; i < x2; i++) {
             fb[row + i] = color;
         }
     }
 }
 
-void gfx_draw_rect(uint16_t *fb, int x, int y, int w, int h, uint16_t color)
+void atlas_gfx_draw_rect(uint16_t *fb, int x, int y, int w, int h, uint16_t color)
 {
-    if (w <= 0 || h <= 0) return;
-    gfx_fill_rect(fb, x, y, w, 1, color);
-    gfx_fill_rect(fb, x, y + h - 1, w, 1, color);
-    gfx_fill_rect(fb, x, y, 1, h, color);
-    gfx_fill_rect(fb, x + w - 1, y, 1, h, color);
+    if (!fb || w <= 0 || h <= 0) return;
+    atlas_gfx_fill_rect(fb, x, y, w, 1, color);
+    atlas_gfx_fill_rect(fb, x, y + h - 1, w, 1, color);
+    atlas_gfx_fill_rect(fb, x, y, 1, h, color);
+    atlas_gfx_fill_rect(fb, x + w - 1, y, 1, h, color);
 }
 
-void gfx_draw_line(uint16_t *fb, int x0, int y0, int x1, int y1, uint16_t color)
+void atlas_gfx_draw_char(uint16_t *fb, int x, int y, char c, uint16_t fg, uint16_t bg, int scale)
 {
-    int dx = abs(x1 - x0);
-    int dy = abs(y1 - y0);
-    int sx = (x0 < x1) ? 1 : -1;
-    int sy = (y0 < y1) ? 1 : -1;
-    int err = dx - dy;
-
-    while (true) {
-        gfx_draw_pixel(fb, x0, y0, color);
-        if (x0 == x1 && y0 == y1) break;
-        int e2 = 2 * err;
-        if (e2 > -dy) {
-            err -= dy;
-            x0 += sx;
-        }
-        if (e2 < dx) {
-            err += dx;
-            y0 += sy;
-        }
-    }
-}
-
-void gfx_draw_char(uint16_t *fb, int x, int y, char c, uint16_t fg, uint16_t bg, int scale)
-{
-    if (c < 32 || c > 126) c = ' ';
+    if (!fb || c < 32 || c > 126) c = ' ';
     const uint8_t *glyph = font5x7[c - 32];
 
     for (int col = 0; col < 5; col++) {
         uint8_t line = glyph[col];
         for (int row = 0; row < 7; row++) {
             uint16_t color = (line & (1 << row)) ? fg : bg;
-            if (color != 0x0001) { // 0x0001 can represent transparent if needed
+            if (color != 0x0001) { /* 0x0001 treated as transparent */
                 if (scale == 1) {
-                    gfx_draw_pixel(fb, x + col, y + row, color);
+                    int px = x + col;
+                    int py = y + row;
+                    if (px >= 0 && px < ATLAS_LCD_WIDTH && py >= 0 && py < ATLAS_LCD_HEIGHT) {
+                        fb[py * ATLAS_LCD_WIDTH + px] = color;
+                    }
                 } else {
-                    gfx_fill_rect(fb, x + col * scale, y + row * scale, scale, scale, color);
+                    atlas_gfx_fill_rect(fb, x + col * scale, y + row * scale, scale, scale, color);
                 }
             }
         }
     }
-    // Trailing column for spacing
+
+    /* 1-pixel trailing column for character spacing */
     if (bg != 0x0001) {
         if (scale == 1) {
+            int px = x + 5;
             for (int row = 0; row < 7; row++) {
-                gfx_draw_pixel(fb, x + 5, y + row, bg);
+                int py = y + row;
+                if (px >= 0 && px < ATLAS_LCD_WIDTH && py >= 0 && py < ATLAS_LCD_HEIGHT) {
+                    fb[py * ATLAS_LCD_WIDTH + px] = bg;
+                }
             }
         } else {
-            gfx_fill_rect(fb, x + 5 * scale, y, scale, 7 * scale, bg);
+            atlas_gfx_fill_rect(fb, x + 5 * scale, y, scale, 7 * scale, bg);
         }
     }
 }
 
-void gfx_draw_str(uint16_t *fb, int x, int y, const char *str, uint16_t fg, uint16_t bg, int scale)
+void atlas_gfx_draw_string(uint16_t *fb, int x, int y, const char *str, uint16_t fg, uint16_t bg, int scale)
 {
-    if (!str) return;
+    if (!fb || !str) return;
     int cur_x = x;
     while (*str) {
-        gfx_draw_char(fb, cur_x, y, *str, fg, bg, scale);
+        atlas_gfx_draw_char(fb, cur_x, y, *str, fg, bg, scale);
         cur_x += 6 * scale;
         str++;
+    }
+}
+
+void atlas_gfx_draw_string_centered(uint16_t *fb, int y, const char *str, uint16_t fg, uint16_t bg, int scale)
+{
+    if (!fb || !str) return;
+    int len = (int)strlen(str);
+    int total_w = len * 6 * scale;
+    int x = (ATLAS_LCD_WIDTH - total_w) / 2;
+    if (x < 0) x = 0;
+    atlas_gfx_draw_string(fb, x, y, str, fg, bg, scale);
+}
+
+void atlas_gfx_draw_card(uint16_t *fb, int x, int y, int w, int h, const char *title, const char *tagline, bool selected)
+{
+    if (!fb) return;
+
+    uint16_t bg_col     = selected ? COLOR_PANEL_SEL : COLOR_PANEL_BG;
+    uint16_t border_col = selected ? COLOR_BORDER_SEL : COLOR_BORDER_NORM;
+
+    /* Card background */
+    atlas_gfx_fill_rect(fb, x, y, w, h, bg_col);
+
+    /* Card border (2px thick when selected for strong visual cue) */
+    atlas_gfx_draw_rect(fb, x, y, w, h, border_col);
+    if (selected) {
+        atlas_gfx_draw_rect(fb, x + 1, y + 1, w - 2, h - 2, border_col);
+    }
+
+    /* Accent top indicator bar on active card */
+    if (selected) {
+        atlas_gfx_fill_rect(fb, x + 4, y + 2, w - 8, 3, COLOR_CYAN);
+    }
+
+    /* Title */
+    uint16_t title_col = selected ? COLOR_CYAN : COLOR_TEXT_MAIN;
+    atlas_gfx_draw_string(fb, x + 10, y + 14, title, title_col, 0x0001, 1);
+
+    /* Tagline */
+    if (tagline && strlen(tagline) > 0) {
+        atlas_gfx_draw_string(fb, x + 10, y + 34, tagline, COLOR_TEXT_MUTED, 0x0001, 1);
     }
 }
