@@ -19,13 +19,15 @@ extern "C" {
  * @brief Application manifest and flash metadata descriptor.
  */
 typedef struct {
-    char     app_id[32];      /**< Unique alphanumeric identifier (e.g. "pkg_store") */
-    char     app_name[32];    /**< Human-readable title (e.g. "APKG Store") */
-    char     tagline[48];     /**< Short descriptor/subtitle (e.g. "Installer & OTA Hub") */
+    char     app_id[32];      /**< Unique alphanumeric identifier (e.g. "doom") */
+    char     app_name[32];    /**< Human-readable title (e.g. "Doom Classic") */
+    char     tagline[48];     /**< Short descriptor/subtitle (e.g. "Port by Espressif") */
     char     version[16];     /**< Semantic version string (e.g. "1.0.0") */
-    uint32_t flash_offset;    /**< Flash execution partition offset (e.g. ota_1 offset) */
+    char     bin_path[128];   /**< Full path on SD card (e.g. "/sdcard/apps/doom.bin") */
+    uint32_t flash_offset;    /**< Flash execution partition offset (ota_1) */
     uint32_t size;            /**< Binary payload size in bytes */
-    bool     is_installed;    /**< 1 = active & executable, 0 = ghost deleted / uninstalled */
+    bool     is_installed;    /**< 1 = active & executable */
+    bool     is_staged;       /**< 1 = currently flashed in ota_1 partition ready for instant boot */
 } atlas_app_entry_t;
 
 /**
@@ -34,6 +36,13 @@ typedef struct {
  * @return ESP_OK on success.
  */
 esp_err_t app_registry_init(void);
+
+/**
+ * @brief Dynamically scan `/sdcard/apps/` for `.bin` files and register them.
+ *
+ * @return ESP_OK on success.
+ */
+esp_err_t app_registry_scan_sdcard(void);
 
 /**
  * @brief Retrieve all registered applications.
@@ -63,10 +72,32 @@ esp_err_t app_registry_get(const char *app_id, atlas_app_entry_t *out_entry);
 esp_err_t app_registry_register(const atlas_app_entry_t *entry);
 
 /**
+ * @brief Check if an app is currently staged in the ota_1 flash partition.
+ *
+ * @param app_id App identifier to check.
+ * @return true if currently staged in ota_1, false otherwise.
+ */
+bool app_registry_is_staged(const char *app_id);
+
+/**
+ * @brief Stage app into ota_1 flash partition (if not already staged) and reboot into it.
+ * Atlas OS in ota_0 remains 100% untouched.
+ *
+ * @param app_id      Unique identifier of app to launch.
+ * @param progress_cb Optional progress callback (written bytes, total bytes) for UI progress bar.
+ * @return ESP_OK on success (will trigger esp_restart() immediately).
+ */
+esp_err_t app_registry_stage_and_launch(const char *app_id, void (*progress_cb)(size_t written, size_t total));
+
+/**
+ * @brief Ensure boot partition is set to Atlas OS (ota_0 / factory) for failsafe boot.
+ *
+ * @return ESP_OK on success.
+ */
+esp_err_t app_registry_ensure_boot_os(void);
+
+/**
  * @brief Fast 1-click uninstall engine.
- * 1. Recursively wipes `/sdcard/apps/<app_id>/`.
- * 2. Clears is_installed flag in NVS.
- * 3. Returns immediately without triggering physical SPI flash sector erases.
  *
  * @param app_id Unique app identifier to remove.
  * @return ESP_OK on success.

@@ -111,8 +111,11 @@ void atlas_gfx_clear(uint16_t *fb, uint16_t color)
     if (color == 0) {
         memset(fb, 0, ATLAS_LCD_BYTES);
     } else {
-        for (int i = 0; i < ATLAS_LCD_PIXELS; i++) {
-            fb[i] = color;
+        uint32_t c32 = ((uint32_t)color << 16) | (uint32_t)color;
+        uint32_t *fb32 = (uint32_t *)fb;
+        int count = ATLAS_LCD_PIXELS / 2;
+        for (int i = 0; i < count; i++) {
+            fb32[i] = c32;
         }
     }
 }
@@ -124,11 +127,12 @@ void atlas_gfx_fill_rect(uint16_t *fb, int x, int y, int w, int h, uint16_t colo
     int y1 = (y < 0) ? 0 : y;
     int x2 = (x + w > ATLAS_LCD_WIDTH) ? ATLAS_LCD_WIDTH : (x + w);
     int y2 = (y + h > ATLAS_LCD_HEIGHT) ? ATLAS_LCD_HEIGHT : (y + h);
+    int span = x2 - x1;
 
     for (int j = y1; j < y2; j++) {
-        int row = j * ATLAS_LCD_WIDTH;
-        for (int i = x1; i < x2; i++) {
-            fb[row + i] = color;
+        uint16_t *row = &fb[j * ATLAS_LCD_WIDTH + x1];
+        for (int i = 0; i < span; i++) {
+            row[i] = color;
         }
     }
 }

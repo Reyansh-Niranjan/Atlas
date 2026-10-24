@@ -21,7 +21,6 @@ idf_component_register(
         driver
         esp_driver_spi
         esp_driver_i2s
-        esp_driver_ledc
         esp_driver_gpio
         esp_driver_sdspi
         esp_adc
@@ -33,6 +32,8 @@ idf_component_register(
         freertos
         log
         heap
+        app_update
+        esp_partition
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-unused-function -Wno-format-truncation)

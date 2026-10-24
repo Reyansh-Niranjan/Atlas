@@ -33,8 +33,10 @@ void app_main(void)
     atlas_system_diag_t diag;
     ESP_ERROR_CHECK(atlas_system_init(&diag));
 
-    /* 3. Initialize NVS Application Registry */
+    /* 3. Initialize NVS Application Registry & Scan SD Storage */
     ESP_ERROR_CHECK(app_registry_init());
+    app_registry_ensure_boot_os();
+    app_registry_scan_sdcard();
 
     /* 4. Launch Primary 2x2 Grid Home Launcher */
     ESP_LOGI(TAG, "Bootstrap complete. Launching 2x2 Home Interface...");

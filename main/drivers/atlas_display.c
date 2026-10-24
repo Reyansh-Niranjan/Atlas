@@ -10,7 +10,6 @@
 #include "esp_heap_caps.h"
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
-#include "driver/ledc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "rom/ets_sys.h"
@@ -54,7 +53,6 @@ static spi_transaction_t   s_dma_trans[DMA_QUEUE_DEPTH];
 static uint8_t            *s_dma_buffer[DMA_QUEUE_DEPTH] = {NULL, NULL};
 static int                 s_dma_slot = 0;
 static int                 s_in_flight_count = 0;
-static bool                s_ledc_initialized = false;
 
 /* ── ISR Callback: Set DC line before transmission starts ────────────────── */
 static void IRAM_ATTR lcd_spi_pre_transfer_callback(spi_transaction_t *t)
@@ -184,36 +182,6 @@ static void lcd_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
     lcd_cmd_byte(CMD_RAMWR);
 }
 
-/* ── Backlight LEDC PWM Setup ────────────────────────────────────────────── */
-static void lcd_init_backlight(void)
-{
-    if ((int)ATLAS_PIN_LCD_BCKL < 0) {
-        ESP_LOGI(TAG, "Backlight pin is tied to hardware power rail (no PWM dimming).");
-        return;
-    }
-
-    ledc_timer_config_t timer_cfg = {
-        .speed_mode       = LEDC_LOW_SPEED_MODE,
-        .duty_resolution  = LEDC_TIMER_8_BIT,
-        .timer_num        = LEDC_TIMER_0,
-        .freq_hz          = 5000,
-        .clk_cfg          = LEDC_AUTO_CLK,
-    };
-    ESP_ERROR_CHECK(ledc_timer_config(&timer_cfg));
-
-    ledc_channel_config_t chan_cfg = {
-        .gpio_num       = ATLAS_PIN_LCD_BCKL,
-        .speed_mode     = LEDC_LOW_SPEED_MODE,
-        .channel        = LEDC_CHANNEL_0,
-        .timer_sel      = LEDC_TIMER_0,
-        .intr_type      = LEDC_INTR_DISABLE,
-        .duty           = 255,
-        .hpoint         = 0,
-    };
-    ESP_ERROR_CHECK(ledc_channel_config(&chan_cfg));
-    s_ledc_initialized = true;
-}
-
 /* ── Public API Implementation ───────────────────────────────────────────── */
 
 esp_err_t atlas_display_init(void)
@@ -260,10 +228,7 @@ esp_err_t atlas_display_init(void)
     lcd_hardware_reset();
     lcd_init_registers();
 
-    /* 5. Initialize optional backlight PWM */
-    lcd_init_backlight();
-
-    /* 6. Allocate DMA ping-pong buffers in internal SRAM */
+    /* 5. Allocate DMA ping-pong buffers in internal SRAM */
     s_dma_buffer[0] = (uint8_t *)heap_caps_aligned_alloc(64, DMA_CHUNK_BYTES, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     s_dma_buffer[1] = (uint8_t *)heap_caps_aligned_alloc(64, DMA_CHUNK_BYTES, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     if (!s_dma_buffer[0] || !s_dma_buffer[1]) {
@@ -282,10 +247,7 @@ esp_err_t atlas_display_init(void)
 
 void atlas_display_set_brightness(uint8_t brightness)
 {
-    if (s_ledc_initialized) {
-        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, brightness);
-        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-    }
+    (void)brightness; /* Backlight is tied to 5V power rail on hardware */
 }
 
 void atlas_display_wait_flush(void)

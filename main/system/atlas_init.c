@@ -21,7 +21,6 @@
 #include "freertos/task.h"
 
 static const char *TAG = "atlas_init";
-#define SPLASH_LOGO_PATH "/sdcard/assets/R2_Reyansh-LOGO.jpg"
 
 esp_err_t atlas_system_init(atlas_system_diag_t *out_diag)
 {
@@ -70,33 +69,12 @@ esp_err_t atlas_system_init(atlas_system_diag_t *out_diag)
     }
 
     /* ── 4. Splash Screen ────────────────────────────────────────────────── */
-    ESP_LOGI(TAG, "[BOOT 4/7] Loading Splash Screen...");
-    bool rendered_custom_logo = false;
-    if (diag.sdcard_ok) {
-        FILE *f_logo = fopen(SPLASH_LOGO_PATH, "rb");
-        if (f_logo) {
-            fseek(f_logo, 0, SEEK_END);
-            long fsize = ftell(f_logo);
-            fclose(f_logo);
-            ESP_LOGI(TAG, "           Found splash logo: %s (%ld bytes)", SPLASH_LOGO_PATH, fsize);
-            /* Note: Scheduled for full JPEG streaming decode in later UI phase */
-            rendered_custom_logo = true;
-        }
-    }
-
+    ESP_LOGI(TAG, "[BOOT 4/7] Rendering Atlas Boot Banner...");
     if (boot_fb) {
         atlas_gfx_clear(boot_fb, COLOR_BLACK);
-        if (rendered_custom_logo) {
-            atlas_gfx_draw_string_centered(boot_fb, 80,  "ATLAS HANDHELD", COLOR_CYAN, COLOR_BLACK, 2);
-            atlas_gfx_draw_string_centered(boot_fb, 115, "R2 Reyansh Edition", COLOR_WHITE, COLOR_BLACK, 1);
-            atlas_gfx_draw_string_centered(boot_fb, 135, "Core OS Loaded from Storage", COLOR_TEXT_MUTED, COLOR_BLACK, 1);
-        } else {
-            /* Fallback centered text banner on black background */
-            atlas_gfx_draw_string_centered(boot_fb, 85,  "ATLAS OS", COLOR_CYAN, COLOR_BLACK, 2);
-            atlas_gfx_draw_string_centered(boot_fb, 120, "Reyansh Niranjan - v1.0", COLOR_WHITE, COLOR_BLACK, 1);
-            atlas_gfx_draw_string_centered(boot_fb, 140, "ESP32-S3 | 16MB Flash | 8MB PSRAM", COLOR_TEXT_MUTED, COLOR_BLACK, 1);
-        }
-
+        atlas_gfx_draw_string_centered(boot_fb, 80,  "ATLAS HANDHELD", COLOR_CYAN, COLOR_BLACK, 2);
+        atlas_gfx_draw_string_centered(boot_fb, 115, "R2 Reyansh Edition - v1.0", COLOR_WHITE, COLOR_BLACK, 1);
+        atlas_gfx_draw_string_centered(boot_fb, 135, "ESP32-S3 | 16MB Flash | 8MB PSRAM", COLOR_TEXT_MUTED, COLOR_BLACK, 1);
         atlas_display_flush(0, 0, ATLAS_LCD_WIDTH - 1, ATLAS_LCD_HEIGHT - 1, boot_fb);
         atlas_display_wait_flush();
     }
