@@ -1,6 +1,23 @@
-/**
+﻿/**
  * @file app_registry.h
- * @brief NVS-Backed Application Metadata Registry & Fast Deletion Engine for Atlas OS
+ * @brief NVS-Backed Application Registry for Atlas OS
+ *
+ * Architecture (fix/core-audit-pass-1):
+ * -----------------------------------------------
+ * ESP32-S3 does not provide a process model.  Two execution modes exist:
+ *
+ *   1. IN-FIRMWARE DISPATCH  — call a handler compiled into this image.
+ *      Identified by a stable APP_ID_* constant and a non-NULL handler.
+ *      This is what launcher card presses trigger.
+ *
+ *   2. FIRMWARE UPDATE       — write a validated Atlas OS image to the
+ *      inactive OTA partition and reboot.  Called only via the explicit
+ *      atlas_fw_update_from_sd() API after a deliberate user confirmation.
+ *      Never triggered by a card press.
+ *
+ * SD-card .bin execution (third-party native apps) is NOT SUPPORTED.
+ * The registry still scans /sdcard/apps/ so the UI can display discovered
+ * files, but no arbitrary .bin is ever written to a boot partition.
  */
 #pragma once
 
@@ -15,94 +32,135 @@ extern "C" {
 
 #define APP_REGISTRY_MAX_APPS  16
 
-/**
- * @brief Application manifest and flash metadata descriptor.
- */
-typedef struct {
-    char     app_id[32];      /**< Unique alphanumeric identifier (e.g. "doom") */
-    char     app_name[32];    /**< Human-readable title (e.g. "Doom Classic") */
-    char     tagline[48];     /**< Short descriptor/subtitle (e.g. "Port by Espressif") */
-    char     version[16];     /**< Semantic version string (e.g. "1.0.0") */
-    char     bin_path[128];   /**< Full path on SD card (e.g. "/sdcard/apps/doom.bin") */
-    uint32_t flash_offset;    /**< Flash execution partition offset (ota_1) */
-    uint32_t size;            /**< Binary payload size in bytes */
-    bool     is_installed;    /**< 1 = active & executable */
-    bool     is_staged;       /**< 1 = currently flashed in ota_1 partition ready for instant boot */
-} atlas_app_entry_t;
+/** Stable launcher card IDs — never change across releases. */
+#define APP_ID_PKG_STORE   "pkg_store"
+#define APP_ID_SETTINGS    "settings"
+#define APP_ID_NOVASLATE   "novaslate"
+#define APP_ID_MUSIC       "music"
 
 /**
- * @brief Initialize NVS storage and seed default system apps if table is empty.
+ * @brief In-firmware application dispatch handler.
  *
+ * Called from the main-task context.  Must return normally.
+ * Must NOT call esp_restart() or write to any partition.
+ */
+typedef void (*atlas_app_handler_t)(void);
+
+/**
+ * @brief Application descriptor stored in NVS.
+ *
+ * bin_path is populated only for files discovered on the SD card.
+ * It does NOT imply the file is a bootable firmware image.
+ * flash_offset / size / is_staged are reserved; unused in this release.
+ */
+typedef struct {
+    char     app_id[32];      /**< Stable unique identifier */
+    char     app_name[32];    /**< Human-readable title */
+    char     tagline[48];     /**< Short descriptor */
+    char     version[16];     /**< Semantic version string */
+    char     bin_path[128];   /**< SD-card path if discovered, else "" */
+    uint32_t flash_offset;    /**< Reserved — unused in current release */
+    uint32_t size;            /**< Reserved — unused in current release */
+    bool     is_installed;    /**< true = visible in launcher */
+    bool     is_staged;       /**< Reserved — always false in current release */
+} atlas_app_entry_t;
+
+/* ── Registry lifecycle ──────────────────────────────────────────────────── */
+
+/**
+ * @brief Initialize NVS and seed the four default system apps if empty.
  * @return ESP_OK on success.
  */
 esp_err_t app_registry_init(void);
 
 /**
- * @brief Dynamically scan `/sdcard/apps/` for `.bin` files and register them.
+ * @brief Scan /sdcard/apps/ for .bin files and register their metadata.
  *
- * @return ESP_OK on success.
+ * Files are registered for display only; they cannot be launched as
+ * standalone firmware.  Returns ESP_OK if no SD card is present.
  */
 esp_err_t app_registry_scan_sdcard(void);
 
-/**
- * @brief Retrieve all registered applications.
- *
- * @param out_entries Array buffer to receive app descriptors.
- * @param max_entries Maximum capacity of out_entries.
- * @param out_count   Pointer to store number of retrieved entries.
- * @return ESP_OK on success.
- */
-esp_err_t app_registry_get_all(atlas_app_entry_t *out_entries, size_t max_entries, size_t *out_count);
+/* ── Registry lookup ─────────────────────────────────────────────────────── */
 
 /**
- * @brief Lookup application metadata by app_id.
- *
- * @param app_id    Unique app identifier.
- * @param out_entry Destination pointer to write app metadata.
- * @return ESP_OK if found, ESP_ERR_NOT_FOUND if missing.
+ * @brief Retrieve all registered applications.
+ * @param out_entries Buffer to receive descriptors.
+ * @param max_entries Capacity of out_entries.
+ * @param out_count   Receives number of entries written.
+ */
+esp_err_t app_registry_get_all(atlas_app_entry_t *out_entries,
+                               size_t max_entries, size_t *out_count);
+
+/**
+ * @brief Look up a descriptor by stable app_id.
+ * @return ESP_OK if found, ESP_ERR_NOT_FOUND otherwise.
  */
 esp_err_t app_registry_get(const char *app_id, atlas_app_entry_t *out_entry);
 
 /**
- * @brief Register or update an application descriptor in the NVS table.
- *
- * @param entry Pointer to valid app descriptor.
- * @return ESP_OK on success.
+ * @brief Register or update a descriptor.
  */
 esp_err_t app_registry_register(const atlas_app_entry_t *entry);
 
 /**
- * @brief Check if an app is currently staged in the ota_1 flash partition.
- *
- * @param app_id App identifier to check.
- * @return true if currently staged in ota_1, false otherwise.
+ * @brief Soft-delete: mark uninstalled and remove SD binary if present.
+ * @return ESP_OK on success, ESP_ERR_NOT_FOUND if not registered.
  */
-bool app_registry_is_staged(const char *app_id);
+esp_err_t app_registry_uninstall(const char *app_id);
+
+/* ── In-firmware app dispatch ────────────────────────────────────────────── */
 
 /**
- * @brief Stage app into ota_1 flash partition (if not already staged) and reboot into it.
- * Atlas OS in ota_0 remains 100% untouched.
+ * @brief Return the compiled-in handler for app_id, or NULL if unimplemented.
  *
- * @param app_id      Unique identifier of app to launch.
- * @param progress_cb Optional progress callback (written bytes, total bytes) for UI progress bar.
- * @return ESP_OK on success (will trigger esp_restart() immediately).
+ * Callers must check for NULL and display an honest "not available" message.
  */
-esp_err_t app_registry_stage_and_launch(const char *app_id, void (*progress_cb)(size_t written, size_t total));
+atlas_app_handler_t app_registry_get_handler(const char *app_id);
 
 /**
- * @brief Ensure boot partition is set to Atlas OS (ota_0 / factory) for failsafe boot.
+ * @brief Dispatch a compiled-in app by its stable app_id.
  *
- * @return ESP_OK on success.
+ * Never writes to flash.  Never calls esp_restart().
+ *
+ * @return ESP_OK              — handler called and returned.
+ *         ESP_ERR_NOT_SUPPORTED — no handler for this app_id (not implemented yet).
+ *         ESP_ERR_NOT_FOUND    — app_id not in registry.
+ */
+esp_err_t app_registry_launch(const char *app_id);
+
+/* ── Boot partition safety ───────────────────────────────────────────────── */
+
+/**
+ * @brief Ensure the boot partition points to Atlas OS (ota_0 / factory).
+ *
+ * Call once at startup.  Safe if ota_0 is already the boot target.
  */
 esp_err_t app_registry_ensure_boot_os(void);
 
+/* ── Explicit firmware update (not launcher-triggered) ───────────────────── */
+
 /**
- * @brief Fast 1-click uninstall engine.
+ * @brief Write a validated Atlas OS image from SD card to the inactive OTA
+ *        partition, then reboot.
  *
- * @param app_id Unique app identifier to remove.
- * @return ESP_OK on success.
+ * Safety checks before any flash write:
+ *   - File exists and is readable.
+ *   - File size > 0 and <= target partition size.
+ *   - esp_image_verify() passes (valid magic + checksum).
+ *   - On any error: esp_ota_abort() called, boot partition unchanged.
+ *
+ * This function is intentionally NOT reachable from a launcher card press.
+ * It must only be called from an explicit "Install Firmware Update" action
+ * with a user-visible confirmation step.
+ *
+ * @param bin_path    Full path to Atlas firmware .bin on SD card.
+ * @param progress_cb Optional progress callback (bytes_written, total_bytes).
+ * @return ESP_OK triggers esp_restart() after setting boot partition.
+ *         Any other code: update aborted, boot partition unchanged.
  */
-esp_err_t app_registry_uninstall(const char *app_id);
+esp_err_t atlas_fw_update_from_sd(const char *bin_path,
+                                  void (*progress_cb)(size_t written, size_t total));
 
 #ifdef __cplusplus
 }
