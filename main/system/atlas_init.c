@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @file atlas_init.c
  * @brief Atlas OS Boot Engine & Hardware Self-Check Diagnostics
  *
@@ -148,9 +148,9 @@ esp_err_t atlas_system_init(atlas_system_diag_t *out_diag)
     diag.joystick_cal_ok = (abs(diag.joy_center_x) <= 15 && abs(diag.joy_center_y) <= 15);
 
     /* Mic RX test (OPTIONAL — INMP441 may not be populated) */
-    int16_t mic_buf[64];
     size_t mic_bytes = 0;
     if (diag.audio_ok) {
+        int16_t mic_buf[64];
         esp_err_t mic_err = atlas_audio_read(mic_buf, 64, &mic_bytes, pdMS_TO_TICKS(50));
         diag.mic_data_ok = (mic_err == ESP_OK && mic_bytes > 0);
     }
