@@ -3,6 +3,10 @@ cmake_minimum_required(VERSION 3.16)
 idf_component_register(
     SRCS
         "main.c"
+        "boot/atlas_boot.c"
+        "core/atlas_event.c"
+        "core/atlas_service.c"
+        "core/atlas_sysinfo.c"
         "drivers/atlas_display.c"
         "drivers/atlas_input.c"
         "drivers/atlas_audio.c"
@@ -14,6 +18,8 @@ idf_component_register(
         "ui/screen_recovery.c"
     INCLUDE_DIRS
         "include"
+        "boot"
+        "core"
         "drivers"
         "system"
         "ui"
@@ -26,6 +32,9 @@ idf_component_register(
         esp_adc
         esp_rom
         esp_psram
+        esp_timer
+        esp_event
+        esp_hw_support
         fatfs
         sdmmc
         nvs_flash
