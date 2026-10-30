@@ -1,27 +1,23 @@
-﻿/**
+/**
  * @file screen_home.c
- * @brief 2x2 Grid Home Launcher for Atlas OS
+ * @brief Dynamic Grid Home Launcher for ATLAS OS
  *
- * Each card maps to a STABLE app_id constant (APP_ID_*), never to a
- * positional NVS index.  NVS reordering cannot redirect a card to a
- * different app.
- *
- * Launch behaviour:
- *   - app_registry_launch() is called with the card''s explicit app_id.
- *   - ESP_OK   → handler ran; UI returns to home loop.
- *   - ESP_ERR_NOT_SUPPORTED → show "Not implemented" toast.
- *   - any other error  → show truthful error toast.
- *   - The UI NEVER shows a success message unless a handler actually ran.
- *
- * Context actions (C/D) are visually labelled but explicitly marked as
- * not-implemented in this release.  They display an honest message.
+ * Single source of truth: queries the Application Manager dynamically.
+ * Features:
+ *   - Renders 2x2 grid of genuinely registered applications.
+ *   - Supports pagination when total applications exceed 4.
+ *   - Displays empty state when no applications are available.
+ *   - Shows SD-card status in the header.
+ *   - Safely executes launchable apps and rejects unsupported runtimes with honest UI toasts.
  */
 #include "screen_home.h"
 #include "atlas_gfx.h"
 #include "atlas_display.h"
 #include "atlas_input.h"
 #include "atlas_audio.h"
-#include "app_registry.h"
+#include "atlas_sdcard.h"
+#include "atlas_event.h"
+#include "app_manager.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -33,50 +29,12 @@
 
 static const char *TAG = "screen_home";
 
-/* ── Card Descriptor ─────────────────────────────────────────────────────── */
-/*
- * Each card''s .id is an APP_ID_* constant.  These are the canonical launch
- * targets and must match what the registry and handlers use.
- * The four positions in this array correspond to grid cells 0-3 (row-major).
- */
-typedef struct {
-    const char *id;             /**< Stable app_id — authoritative launch key */
-    const char *title;          /**< Fallback display title if NVS not available */
-    const char *tagline;        /**< Fallback tagline */
-    const char *action_c_label; /**< Label for Button C action */
-    const char *action_d_label; /**< Label for Button D action */
-} launcher_card_t;
+static volatile bool s_catalogue_dirty = false;
 
-static const launcher_card_t s_cards[4] = {
-    {
-        .id             = APP_ID_PKG_STORE,
-        .title          = "APKG Store",
-        .tagline        = "Installer & OTA Hub",
-        .action_c_label = "Check Updates",   /* not implemented */
-        .action_d_label = "Manage Repos",    /* not implemented */
-    },
-    {
-        .id             = APP_ID_SETTINGS,
-        .title          = "Settings",
-        .tagline        = "Telemetry & Cal",
-        .action_c_label = "Calibrate ADC",   /* not implemented */
-        .action_d_label = "System Info",     /* not implemented */
-    },
-    {
-        .id             = APP_ID_NOVASLATE,
-        .title          = "NovaSlate",
-        .tagline        = "Curriculum & Reader",
-        .action_c_label = "Sync Library",    /* not implemented */
-        .action_d_label = "Bookmarks",       /* not implemented */
-    },
-    {
-        .id             = APP_ID_MUSIC,
-        .title          = "Music",
-        .tagline        = "I2S Audio Player",
-        .action_c_label = "Play / Pause",    /* not implemented */
-        .action_d_label = "Playlist",        /* not implemented */
-    },
-};
+static void on_catalogue_changed(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    s_catalogue_dirty = true;
+}
 
 /* ── Audio Feedback ──────────────────────────────────────────────────────── */
 static void play_ui_beep(float freq, int duration_ms)
@@ -106,7 +64,7 @@ static void play_ui_beep(float freq, int duration_ms)
 /* ── Primary Launcher Loop ───────────────────────────────────────────────── */
 void screen_home_run(void)
 {
-    ESP_LOGI(TAG, "Launching Atlas 2x2 Home Launcher UI...");
+    ESP_LOGI(TAG, "Launching Dynamic ATLAS Home Launcher UI...");
 
     uint16_t *fb = (uint16_t *)heap_caps_aligned_alloc(
         64, ATLAS_LCD_BYTES, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
@@ -119,17 +77,13 @@ void screen_home_run(void)
         return;
     }
 
-    /* Pre-fetch NVS display names for the four fixed cards.
-     * We look up by the card''s stable app_id, not by position. */
-    atlas_app_entry_t reg_entry[4];
-    bool reg_valid[4] = {false, false, false, false};
-    for (int i = 0; i < 4; i++) {
-        reg_valid[i] = (app_registry_get(s_cards[i].id, &reg_entry[i]) == ESP_OK);
-    }
+    /* Subscribe to application catalogue change events */
+    atlas_event_register_handler(ATLAS_EVENT_APP_CATALOGUE_CHANGED, on_catalogue_changed, NULL);
 
-    int active_row = 0;
-    int active_col = 0;
-    bool joy_latched  = false;
+    int current_page = 0;
+    int active_row   = 0;
+    int active_col   = 0;
+    bool joy_latched = false;
     bool needs_redraw = true;
 
     bool last_btn_a = false, last_btn_b = false;
@@ -144,73 +98,167 @@ void screen_home_run(void)
     const int ROW_Y[2] = {34, 118};
 
     while (true) {
+        if (s_catalogue_dirty) {
+            s_catalogue_dirty = false;
+            needs_redraw = true;
+        }
+
+        size_t total_apps = app_manager_get_count();
+        int total_pages   = (total_apps == 0) ? 1 : (int)((total_apps + 3) / 4);
+
+        if (current_page >= total_pages) {
+            current_page = total_pages - 1;
+            needs_redraw = true;
+        }
+
+        int page_start = current_page * 4;
+        int page_apps  = 0;
+        if ((int)total_apps > page_start) {
+            page_apps = (int)total_apps - page_start;
+            if (page_apps > 4) page_apps = 4;
+        }
+
+        /* Clamp active selection to available cards on this page */
+        if (page_apps > 0) {
+            int cur_idx = active_row * 2 + active_col;
+            if (cur_idx >= page_apps) {
+                active_row = (page_apps - 1) / 2;
+                active_col = (page_apps - 1) % 2;
+                needs_redraw = true;
+            }
+        }
+
         atlas_input_state_t in = atlas_input_get_state();
 
         /* ── Joystick navigation (edge-detected) ─────────────────────────── */
         if (!joy_latched) {
-            if      (in.joy_x >  50 && active_col == 0) { active_col = 1; joy_latched = true; needs_redraw = true; play_ui_beep(880.0f, 15); }
-            else if (in.joy_x < -50 && active_col == 1) { active_col = 0; joy_latched = true; needs_redraw = true; play_ui_beep(880.0f, 15); }
-            if      (in.joy_y >  50 && active_row == 0) { active_row = 1; joy_latched = true; needs_redraw = true; play_ui_beep(880.0f, 15); }
-            else if (in.joy_y < -50 && active_row == 1) { active_row = 0; joy_latched = true; needs_redraw = true; play_ui_beep(880.0f, 15); }
+            if (page_apps > 0) {
+                if (in.joy_x > 50) {
+                    if (active_col == 0 && (active_row * 2 + 1) < page_apps) {
+                        active_col = 1;
+                        joy_latched = true;
+                        needs_redraw = true;
+                        play_ui_beep(880.0f, 15);
+                    } else if (current_page < total_pages - 1) {
+                        /* Next page */
+                        current_page++;
+                        active_col = 0;
+                        joy_latched = true;
+                        needs_redraw = true;
+                        play_ui_beep(980.0f, 20);
+                    }
+                } else if (in.joy_x < -50) {
+                    if (active_col == 1) {
+                        active_col = 0;
+                        joy_latched = true;
+                        needs_redraw = true;
+                        play_ui_beep(880.0f, 15);
+                    } else if (current_page > 0) {
+                        /* Prev page */
+                        current_page--;
+                        active_col = 1;
+                        joy_latched = true;
+                        needs_redraw = true;
+                        play_ui_beep(780.0f, 20);
+                    }
+                }
+
+                if (in.joy_y > 50) {
+                    if (active_row == 0 && (2 + active_col) < page_apps) {
+                        active_row = 1;
+                        joy_latched = true;
+                        needs_redraw = true;
+                        play_ui_beep(880.0f, 15);
+                    }
+                } else if (in.joy_y < -50) {
+                    if (active_row == 1) {
+                        active_row = 0;
+                        joy_latched = true;
+                        needs_redraw = true;
+                        play_ui_beep(880.0f, 15);
+                    }
+                }
+            }
         } else if (abs(in.joy_x) < 25 && abs(in.joy_y) < 25) {
             joy_latched = false;
         }
 
-        int active_idx = active_row * 2 + active_col;
-        const launcher_card_t *card = &s_cards[active_idx];
+        int active_idx = page_start + (active_row * 2 + active_col);
+        atlas_app_t active_app;
+        bool has_active_app = (app_manager_get_at(active_idx, &active_app) == ESP_OK);
 
-        /* ── Button A: Launch (dispatch to compiled-in handler) ─────────── */
+        /* ── Button A: Launch Application ───────────────────────────────── */
         if (in.btn_a && !last_btn_a) {
-            play_ui_beep(1200.0f, 40);
+            if (has_active_app) {
+                if (active_app.is_launchable) {
+                    play_ui_beep(1200.0f, 40);
+                    esp_err_t launch_err = app_manager_launch(active_app.app_id);
+                    needs_redraw = true;
 
-            esp_err_t launch_err = app_registry_launch(card->id);
-            needs_redraw = true;
-
-            if (launch_err == ESP_OK) {
-                /* Handler ran and returned — home screen resumes. */
-                snprintf(toast_msg, sizeof(toast_msg), "RETURNED: %s", card->title);
-                toast_timer = 35;
-            } else if (launch_err == ESP_ERR_NOT_SUPPORTED) {
-                /* No compiled handler — be honest. */
-                snprintf(toast_msg, sizeof(toast_msg), "NOT AVAILABLE: %s", card->title);
-                toast_timer = 50;
-                ESP_LOGW(TAG, "[A] Launch '%s': no handler (not implemented).", card->id);
-            } else if (launch_err == ESP_ERR_NOT_FOUND) {
-                snprintf(toast_msg, sizeof(toast_msg), "ERROR: %s not in registry", card->id);
-                toast_timer = 50;
-                ESP_LOGE(TAG, "[A] Launch '%s': not in registry.", card->id);
+                    if (launch_err == ESP_OK) {
+                        snprintf(toast_msg, sizeof(toast_msg), "RETURNED: %s", active_app.name);
+                        toast_timer = 35;
+                    } else {
+                        snprintf(toast_msg, sizeof(toast_msg), "ERROR: %s", esp_err_to_name(launch_err));
+                        toast_timer = 50;
+                    }
+                } else {
+                    /* Honest notification of unsupported runtime */
+                    play_ui_beep(300.0f, 50);
+                    snprintf(toast_msg, sizeof(toast_msg), "UNSUPPORTED: Runtime '%s' unavailable",
+                             active_app.runtime_str);
+                    toast_timer = 50;
+                    needs_redraw = true;
+                    ESP_LOGW(TAG, "Cannot launch '%s': runtime '%s' is not supported.",
+                             active_app.app_id, active_app.runtime_str);
+                }
             } else {
-                snprintf(toast_msg, sizeof(toast_msg), "ERROR: %s", esp_err_to_name(launch_err));
-                toast_timer = 50;
+                play_ui_beep(300.0f, 30);
+                snprintf(toast_msg, sizeof(toast_msg), "NO APP SELECTED");
+                toast_timer = 30;
+                needs_redraw = true;
             }
         }
 
-        /* ── Button B: Reset focus ───────────────────────────────────────── */
+        /* ── Button B: Focus Reset / First Page ─────────────────────────── */
         if (in.btn_b && !last_btn_b) {
-            if (active_row != 0 || active_col != 0) {
-                active_row = 0;
-                active_col = 0;
-            }
-            snprintf(toast_msg, sizeof(toast_msg), "FOCUS: %s", s_cards[0].title);
-            toast_timer = 30;
+            current_page = 0;
+            active_row   = 0;
+            active_col   = 0;
+            snprintf(toast_msg, sizeof(toast_msg), "PAGE 1");
+            toast_timer = 25;
             needs_redraw = true;
             play_ui_beep(587.33f, 25);
         }
 
-        /* ── Button C/D: Context actions (not implemented in this release) ── */
+        /* ── Button C: Prev Page or Rescan ──────────────────────────────── */
         if (in.btn_c && !last_btn_c) {
-            play_ui_beep(783.99f, 30);
-            snprintf(toast_msg, sizeof(toast_msg), "NOT AVAILABLE: %s", card->action_c_label);
-            toast_timer = 40;
+            play_ui_beep(783.99f, 25);
+            if (total_pages > 1) {
+                if (current_page > 0) current_page--;
+                else current_page = total_pages - 1;
+                snprintf(toast_msg, sizeof(toast_msg), "PAGE %d / %d", current_page + 1, total_pages);
+            } else {
+                app_manager_scan_installed();
+                snprintf(toast_msg, sizeof(toast_msg), "RESCANNED SD STORAGE");
+            }
+            toast_timer = 35;
             needs_redraw = true;
-            ESP_LOGW(TAG, "[C] '%s' on '%s': not implemented.", card->action_c_label, card->id);
         }
+
+        /* ── Button D: Next Page or Rescan ──────────────────────────────── */
         if (in.btn_d && !last_btn_d) {
-            play_ui_beep(987.77f, 30);
-            snprintf(toast_msg, sizeof(toast_msg), "NOT AVAILABLE: %s", card->action_d_label);
-            toast_timer = 40;
+            play_ui_beep(987.77f, 25);
+            if (total_pages > 1) {
+                if (current_page < total_pages - 1) current_page++;
+                else current_page = 0;
+                snprintf(toast_msg, sizeof(toast_msg), "PAGE %d / %d", current_page + 1, total_pages);
+            } else {
+                app_manager_scan_installed();
+                snprintf(toast_msg, sizeof(toast_msg), "RESCANNED SD STORAGE");
+            }
+            toast_timer = 35;
             needs_redraw = true;
-            ESP_LOGW(TAG, "[D] '%s' on '%s': not implemented.", card->action_d_label, card->id);
         }
 
         last_btn_a = in.btn_a;
@@ -223,7 +271,7 @@ void screen_home_run(void)
             needs_redraw = true;
         }
 
-        /* ── Render (only on state change) ──────────────────────────────── */
+        /* ── Render Dynamic UI (only on state change) ───────────────────── */
         if (needs_redraw) {
             needs_redraw = false;
 
@@ -232,56 +280,79 @@ void screen_home_run(void)
             /* Header */
             atlas_gfx_fill_rect(fb, 0, 0, ATLAS_LCD_WIDTH, 26, COLOR_PANEL_BG);
             atlas_gfx_draw_rect(fb, 0, 25, ATLAS_LCD_WIDTH, 1, COLOR_BORDER_NORM);
-            atlas_gfx_draw_string(fb, 12, 8, "ATLAS OS", COLOR_CYAN, 0x0001, 1);
-            atlas_gfx_draw_string(fb, 230, 8, "16MB S3", COLOR_TEXT_MUTED, 0x0001, 1);
 
-            /* 2x2 Cards */
-            for (int r = 0; r < 2; r++) {
-                for (int c = 0; c < 2; c++) {
-                    int idx = r * 2 + c;
-                    bool is_active = (r == active_row && c == active_col);
+            char title_bar[64];
+            if (total_pages > 1) {
+                snprintf(title_bar, sizeof(title_bar), "ATLAS OS (Page %d/%d)", current_page + 1, total_pages);
+            } else {
+                snprintf(title_bar, sizeof(title_bar), "ATLAS OS // LAUNCHER");
+            }
+            atlas_gfx_draw_string(fb, 12, 8, title_bar, COLOR_CYAN, 0x0001, 1);
 
-                    /* Display name from NVS if available, else static fallback */
-                    const char *title   = s_cards[idx].title;
-                    const char *tagline = s_cards[idx].tagline;
-                    if (reg_valid[idx] && strlen(reg_entry[idx].app_name) > 0) {
-                        title = reg_entry[idx].app_name;
-                        if (strlen(reg_entry[idx].tagline) > 0) {
-                            tagline = reg_entry[idx].tagline;
+            /* SD Card Status Pill in Header */
+            bool sd_ok = atlas_sdcard_is_mounted();
+            if (sd_ok) {
+                atlas_gfx_draw_string(fb, 230, 8, "[SD:OK]", COLOR_GREEN, 0x0001, 1);
+            } else {
+                atlas_gfx_draw_string(fb, 230, 8, "[NO SD]", COLOR_YELLOW, 0x0001, 1);
+            }
+
+            /* ── Card Grid or Empty State ───────────────────────────────── */
+            if (total_apps == 0) {
+                /* Empty catalogue state */
+                atlas_gfx_fill_rect(fb, 20, 60, 280, 100, COLOR_PANEL_BG);
+                atlas_gfx_draw_rect(fb, 20, 60, 280, 100, COLOR_BORDER_NORM);
+                atlas_gfx_draw_string_centered(fb, 85,  "NO APPLICATIONS INSTALLED", COLOR_YELLOW, 0x0001, 1);
+                atlas_gfx_draw_string_centered(fb, 105, "Install apps to /sdcard/apps/installed/", COLOR_TEXT_MUTED, 0x0001, 1);
+                atlas_gfx_draw_string_centered(fb, 125, "[C] Rescan Storage", COLOR_CYAN, 0x0001, 1);
+            } else {
+                for (int r = 0; r < 2; r++) {
+                    for (int c = 0; c < 2; c++) {
+                        int slot = r * 2 + c;
+                        int app_i = page_start + slot;
+                        if (app_i >= (int)total_apps) continue;
+
+                        atlas_app_t app;
+                        if (app_manager_get_at(app_i, &app) != ESP_OK) continue;
+
+                        bool is_active = (r == active_row && c == active_col);
+
+                        char card_tagline[48];
+                        if (app.is_launchable) {
+                            snprintf(card_tagline, sizeof(card_tagline), "%s", app.tagline);
+                        } else {
+                            snprintf(card_tagline, sizeof(card_tagline), "[%s: unexecutable]", app.runtime_str);
                         }
-                    }
-                    /* If the SD scan gave this card a bin_path, annotate it */
-                    if (reg_valid[idx] && strlen(reg_entry[idx].bin_path) > 0) {
-                        tagline = "[SD FILE - not launchable]";
-                    }
 
-                    atlas_gfx_draw_card(fb, COL_X[c], ROW_Y[r], CARD_W, CARD_H,
-                                        title, tagline, is_active);
+                        atlas_gfx_draw_card(fb, COL_X[c], ROW_Y[r], CARD_W, CARD_H,
+                                            app.name, card_tagline, is_active);
+
+                        /* Icon or category indicator badge */
+                        uint16_t badge_col = (app.type == ATLAS_APP_TYPE_BUILTIN) ? COLOR_CYAN : COLOR_PURPLE;
+                        atlas_gfx_fill_rect(fb, COL_X[c] + CARD_W - 14, ROW_Y[r] + 8, 6, 6, badge_col);
+                    }
                 }
             }
 
-            /* Footer */
+            /* ── Footer ─────────────────────────────────────────────────── */
             atlas_gfx_fill_rect(fb, 0, 202, ATLAS_LCD_WIDTH, 38, COLOR_PANEL_BG);
             atlas_gfx_draw_rect(fb, 0, 202, ATLAS_LCD_WIDTH, 1, COLOR_BORDER_NORM);
 
-            /* Re-resolve active card for footer (index may have changed) */
-            card = &s_cards[active_row * 2 + active_col];
-
             if (toast_timer > 0) {
                 uint16_t toast_color = COLOR_GREEN;
-                /* Distinguish error/unavailable toasts from informational ones */
-                if (strncmp(toast_msg, "NOT AVAILABLE", 13) == 0 ||
-                    strncmp(toast_msg, "ERROR",         5) == 0) {
+                if (strncmp(toast_msg, "UNSUPPORTED", 11) == 0 ||
+                    strncmp(toast_msg, "ERROR",        5) == 0 ||
+                    strncmp(toast_msg, "NO APP",       6) == 0) {
                     toast_color = COLOR_YELLOW;
                 }
                 atlas_gfx_draw_string_centered(fb, 214, toast_msg, toast_color, 0x0001, 1);
             } else {
-                char action_line[64];
-                snprintf(action_line, sizeof(action_line), "[C] %-14s [D] %s",
-                         card->action_c_label, card->action_d_label);
-                atlas_gfx_draw_string(fb, 12, 210, action_line, COLOR_CYAN,       0x0001, 1);
-                atlas_gfx_draw_string(fb, 12, 224, "[A] Launch    [B] Focus Reset",
-                                      COLOR_TEXT_MUTED, 0x0001, 1);
+                if (total_pages > 1) {
+                    atlas_gfx_draw_string(fb, 12, 210, "[C] Prev Page       [D] Next Page", COLOR_CYAN, 0x0001, 1);
+                } else {
+                    atlas_gfx_draw_string(fb, 12, 210, "[C/D] Rescan SD Storage", COLOR_CYAN, 0x0001, 1);
+                }
+                atlas_gfx_draw_string(fb, 12, 224, "[A] Launch App      [B] Reset Focus", COLOR_TEXT_MUTED, 0x0001, 1);
             }
 
             atlas_display_flush(0, 0, ATLAS_LCD_WIDTH - 1, ATLAS_LCD_HEIGHT - 1, fb);
@@ -291,6 +362,6 @@ void screen_home_run(void)
         vTaskDelay(pdMS_TO_TICKS(20)); /* 50 Hz poll */
     }
 
-    /* Unreachable; home loop runs forever. */
+    /* Unreachable */
     free(fb);
 }

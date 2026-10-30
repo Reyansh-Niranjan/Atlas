@@ -13,9 +13,11 @@ idf_component_register(
         "drivers/atlas_sdcard.c"
         "system/atlas_init.c"
         "system/app_registry.c"
+        "system/app_manager.c"
         "ui/atlas_gfx.c"
         "ui/screen_home.c"
         "ui/screen_recovery.c"
+        "ui/screen_settings.c"
     INCLUDE_DIRS
         "include"
         "boot"

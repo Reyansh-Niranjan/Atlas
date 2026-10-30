@@ -5,6 +5,7 @@
  * See app_registry.h for the architecture rationale.
  */
 #include "app_registry.h"
+#include "screen_settings.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -33,17 +34,6 @@ static SemaphoreHandle_t s_reg_mutex = NULL;
  */
 static const atlas_app_entry_t s_default_apps[] = {
     {
-        .app_id       = APP_ID_PKG_STORE,
-        .app_name     = "APKG Store",
-        .tagline      = "Installer & OTA Hub",
-        .version      = "1.0.0",
-        .bin_path     = "",
-        .flash_offset = 0,
-        .size         = 0,
-        .is_installed = true,
-        .is_staged    = false,
-    },
-    {
         .app_id       = APP_ID_SETTINGS,
         .app_name     = "Settings",
         .tagline      = "Telemetry & Cal",
@@ -54,43 +44,11 @@ static const atlas_app_entry_t s_default_apps[] = {
         .is_installed = true,
         .is_staged    = false,
     },
-    {
-        .app_id       = APP_ID_NOVASLATE,
-        .app_name     = "NovaSlate",
-        .tagline      = "Curriculum & Reader",
-        .version      = "1.0.0",
-        .bin_path     = "",
-        .flash_offset = 0,
-        .size         = 0,
-        .is_installed = true,
-        .is_staged    = false,
-    },
-    {
-        .app_id       = APP_ID_MUSIC,
-        .app_name     = "Music",
-        .tagline      = "I2S Audio Player",
-        .version      = "1.0.0",
-        .bin_path     = "",
-        .flash_offset = 0,
-        .size         = 0,
-        .is_installed = true,
-        .is_staged    = false,
-    },
 };
 
 /* ── In-firmware handler registry ────────────────────────────────────────── */
-/*
- * Map stable app_id strings to compiled-in handler functions.
- * Add entries here as apps are implemented.  A NULL handler means
- * "registered in NVS but not yet implemented in this firmware version".
- *
- * ponytail: linear scan over 4 entries — O(4) is fine for a launcher.
- */
 static const struct { const char *id; atlas_app_handler_t fn; } s_handlers[] = {
-    { APP_ID_PKG_STORE,  NULL },  /* ponytail: not implemented yet */
-    { APP_ID_SETTINGS,   NULL },  /* ponytail: not implemented yet */
-    { APP_ID_NOVASLATE,  NULL },  /* ponytail: not implemented yet */
-    { APP_ID_MUSIC,      NULL },  /* ponytail: not implemented yet */
+    { APP_ID_SETTINGS,   screen_settings_run },
 };
 
 /* ── Internal helpers ────────────────────────────────────────────────────── */

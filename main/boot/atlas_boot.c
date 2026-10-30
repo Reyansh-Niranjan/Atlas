@@ -12,7 +12,7 @@
 #include "atlas_audio.h"
 #include "atlas_sdcard.h"
 #include "atlas_gfx.h"
-#include "app_registry.h"
+#include "app_manager.h"
 #include "screen_home.h"
 #include "screen_recovery.h"
 
@@ -254,17 +254,17 @@ static esp_err_t boot_stage_services(void)
 {
     ATLAS_LOG_INFO(ATLAS_LOG_TAG_BOOT, "[STAGE 7/7] Starting System Services...");
 
-    /* Application Registry */
-    esp_err_t reg_err = app_registry_init();
-    if (reg_err != ESP_OK) {
-        ATLAS_LOG_ERROR(ATLAS_LOG_TAG_BOOT, "App registry init failed: %s", esp_err_to_name(reg_err));
-        return reg_err;
+    /* Application Manager */
+    esp_err_t app_err = app_manager_init();
+    if (app_err != ESP_OK) {
+        ATLAS_LOG_ERROR(ATLAS_LOG_TAG_BOOT, "App manager init failed: %s", esp_err_to_name(app_err));
+        return app_err;
     }
 
-    app_registry_ensure_boot_os();
-    app_registry_scan_sdcard();
+    app_manager_ensure_boot_os();
+    app_manager_scan_installed();
 
-    atlas_service_register("app_registry", "NVS Application Registry & Dispatcher", NULL, NULL, NULL);
+    atlas_service_register("app_manager", "Dynamic Application Manager & Lifecycle", NULL, NULL, NULL);
 
     boot_advance_stage(ATLAS_BOOT_STAGE_SERVICES, "services", ESP_OK);
     return ESP_OK;

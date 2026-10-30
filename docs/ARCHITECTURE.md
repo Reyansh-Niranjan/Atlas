@@ -141,6 +141,26 @@ Read-only truthful hardware and kernel telemetry:
 - **System Apps (Core UI, Settings, File Browser, Media Player):** Native compiled in-firmware.
 - **Third-Party Extensible Apps:** WebAssembly (WASM3) or Lightweight Bytecode VM executing out of 8MB PSRAM.
 
+### 4.3 Milestone 2: Dynamic Application Manager Implementation
+
+In Milestone 2, the hardcoded application cards (`s_cards[4]`: APKG Store, NovaSlate, Music) were removed from the launcher. The Application Manager (`main/system/app_manager.c/.h`) was established as the single source of truth:
+
+- **Built-in Applications:** Registered at boot. Only genuinely implemented applications are registered (`Settings`, backed by `screen_settings.c`).
+- **Installed Package Discovery:** Scans `/sdcard/apps/installed/<app_id>/` on mount and on-demand.
+- **Manifest Validation (`manifest.json`):**
+  - File size bounded to <= 2048 bytes.
+  - Required fields: `app_id`, `name`, `version`, `runtime`, `entrypoint`.
+  - Path traversal defense: strictly rejects `..`, absolute paths (`/`), Windows drive specifiers (`:`), or backslashes.
+  - Entrypoint verification: confirms entry point file exists on storage via `stat()`.
+  - Collision & duplicate defense: prevents duplicate IDs and prohibits SD packages from usurping built-in IDs.
+- **Runtime Enforcing:** Applications specifying unsupported runtimes (`wasm`, `native`) are marked `is_launchable = false`, preventing invalid dispatch and displaying honest UI toasts.
+- **Launcher Integration (`screen_home.c`):**
+  - Dynamic card generation from catalogue.
+  - Multi-page pagination (4 cards per page, 2x2 grid) with seamless joystick and button navigation.
+  - Empty catalogue state handling.
+  - SD-card availability indicator pill (`[SD:OK]` vs. `[NO SD]`).
+  - Decoupled event notifications via `ATLAS_EVENT_APP_CATALOGUE_CHANGED`.
+
 ---
 
 ## 5. APKG Package Format Specification

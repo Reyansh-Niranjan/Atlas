@@ -44,6 +44,9 @@ typedef enum {
     /* Input & UI Events */
     ATLAS_EVENT_INPUT_STATE_CHANGED,
 
+    /* Application Events */
+    ATLAS_EVENT_APP_CATALOGUE_CHANGED,
+
     ATLAS_EVENT_MAX
 } atlas_event_id_t;
 
