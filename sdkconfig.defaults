@@ -4,6 +4,7 @@
 # ── FreeRTOS ──────────────────────────────────────────────────────────────────
 CONFIG_FREERTOS_HZ=1000
 CONFIG_FREERTOS_USE_TRACE_FACILITY=n
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 
 # ── PSRAM (Octal 80 MHz, N8R8 / N16R8 module) ─────────────────────────────────
 CONFIG_SPIRAM=y

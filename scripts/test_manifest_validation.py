@@ -191,3 +191,4 @@ def test_manifest_rules():
 
 if __name__ == "__main__":
     test_manifest_rules()
+

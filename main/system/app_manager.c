@@ -143,6 +143,12 @@ esp_err_t app_manager_scan_installed(void)
 
     ATLAS_LOG_INFO(ATLAS_LOG_TAG_APP, "Scanning %s for installed packages...", APPS_INSTALLED_DIR);
 
+    char *json_buf = (char *)malloc(MANIFEST_MAX_FILE_SIZE + 1);
+    if (!json_buf) {
+        closedir(dir);
+        return ESP_ERR_NO_MEM;
+    }
+
     struct dirent *de;
     size_t discovered = 0;
 
@@ -181,7 +187,6 @@ esp_err_t app_manager_scan_installed(void)
             continue;
         }
 
-        char json_buf[MANIFEST_MAX_FILE_SIZE + 1];
         size_t bytes_read = fread(json_buf, 1, st_manifest.st_size, f);
         fclose(f);
         json_buf[bytes_read] = '\0';
@@ -318,6 +323,7 @@ esp_err_t app_manager_scan_installed(void)
     }
 
     closedir(dir);
+    free(json_buf);
     ATLAS_LOG_INFO(ATLAS_LOG_TAG_APP, "Scan completed: %u package(s) installed. Total catalogue: %u.",
                    (unsigned int)discovered, (unsigned int)s_app_count);
 
@@ -398,21 +404,10 @@ esp_err_t app_manager_launch(const char *app_id)
 
 esp_err_t app_manager_ensure_boot_os(void)
 {
-    const esp_partition_t *target = esp_partition_find_first(
-        ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, NULL);
-    if (!target) {
-        target = esp_partition_find_first(
-            ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
-    }
-    if (!target) {
-        ATLAS_LOG_ERROR(ATLAS_LOG_TAG_APP, "ensure_boot_os: no ota_0 or factory partition found!");
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    const esp_partition_t *boot_part = esp_ota_get_boot_partition();
-    if (boot_part != target) {
-        ATLAS_LOG_INFO(ATLAS_LOG_TAG_APP, "Resetting boot target to Atlas OS (%s).", target->label);
-        return esp_ota_set_boot_partition(target);
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (running) {
+        ATLAS_LOG_INFO(ATLAS_LOG_TAG_APP, "Running Atlas OS on partition '%s' (0x%lx)",
+                       running->label, (unsigned long)running->address);
     }
     return ESP_OK;
 }
