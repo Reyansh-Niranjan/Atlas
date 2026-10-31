@@ -257,3 +257,4 @@ esp_err_t atlas_ota_rollback(void)
     vTaskDelay(pdMS_TO_TICKS(100));
     return esp_ota_mark_app_invalid_rollback_and_reboot();
 }
+

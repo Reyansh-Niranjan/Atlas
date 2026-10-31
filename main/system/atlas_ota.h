@@ -97,3 +97,4 @@ esp_err_t atlas_ota_rollback(void);
 #ifdef __cplusplus
 }
 #endif
+

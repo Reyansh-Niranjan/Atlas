@@ -153,3 +153,4 @@ Recovery Safe Mode (triggered by holding Button B / SW2 at boot):
 1. **Firmware updates are now strictly quarantined** within `atlas_ota`, protected by pre-flash checks, non-running slot selection, and hardware rollback.
 2. **Application management is truthful and dynamic**: only real built-in applications are registered, third-party packages are validated against `manifest.json`, and unlaunchable runtimes are honestly flagged.
 3. **Third-party application execution** should proceed with a WebAssembly runtime (e.g. WAMR or WASM3) executing within the 8MB Octal PSRAM boundary, providing true memory sandboxing without firmware flashing.
+
