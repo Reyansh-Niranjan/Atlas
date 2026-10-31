@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @file screen_recovery.c
  * @brief Atlas OS Recovery Safe Mode UI
  *
@@ -17,6 +17,7 @@
 #include "atlas_gfx.h"
 #include "atlas_display.h"
 #include "atlas_input.h"
+#include "atlas_ota.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -58,8 +59,11 @@ void screen_recovery_run(void)
     bool nvs_erase_armed    = false;
     int  confirm_countdown  = 0;
 
-    bool last_btn_a = false, last_btn_c = false, last_btn_d = false;
+    bool last_btn_a = false, last_btn_b = true, last_btn_c = false, last_btn_d = false;
     bool running    = true;
+
+    atlas_ota_status_t ota_st;
+    atlas_ota_get_status(&ota_st);
 
     while (running) {
         atlas_input_state_t in = atlas_input_get_state();
@@ -72,34 +76,43 @@ void screen_recovery_run(void)
         atlas_gfx_draw_string_centered(fb, 10, "! ATLAS RECOVERY SAFE MODE !", COLOR_WHITE, COLOR_RED, 1);
 
         /* Diagnostics card */
-        atlas_gfx_fill_rect(fb, 15, 42, 290, 110, COLOR_PANEL_BG);
-        atlas_gfx_draw_rect(fb, 15, 42, 290, 110, COLOR_BORDER_NORM);
-        atlas_gfx_draw_string(fb, 25, 52, "DIAGNOSTICS & TELEMETRY", COLOR_CYAN, 0x0001, 1);
+        atlas_gfx_fill_rect(fb, 15, 38, 290, 114, COLOR_PANEL_BG);
+        atlas_gfx_draw_rect(fb, 15, 38, 290, 114, COLOR_BORDER_NORM);
+        atlas_gfx_draw_string(fb, 25, 46, "DIAGNOSTICS & TELEMETRY", COLOR_CYAN, 0x0001, 1);
 
         char buf[64];
         snprintf(buf, sizeof(buf), "PSRAM : %u MB (Octal 80 MHz)", (unsigned int)psram_mb);
-        atlas_gfx_draw_string(fb, 25, 70,  buf, COLOR_TEXT_MAIN, 0x0001, 1);
+        atlas_gfx_draw_string(fb, 25, 62,  buf, COLOR_TEXT_MAIN, 0x0001, 1);
 
         snprintf(buf, sizeof(buf), "SRAM  : %lu KB free", (unsigned long)free_sram_kb);
-        atlas_gfx_draw_string(fb, 25, 86,  buf, COLOR_TEXT_MAIN, 0x0001, 1);
+        atlas_gfx_draw_string(fb, 25, 78,  buf, COLOR_TEXT_MAIN, 0x0001, 1);
 
-        atlas_gfx_draw_string(fb, 25, 102, "Flash : 16 MB QIO (Atlas firmware)", COLOR_TEXT_MAIN, 0x0001, 1);
-        atlas_gfx_draw_string(fb, 25, 118, "Trigger: Button B held at boot",     COLOR_YELLOW,    0x0001, 1);
+        const char *part_name = ota_st.running ? ota_st.running->label : "factory";
+        snprintf(buf, sizeof(buf), "Slot  : %s (Rollback: %s)", part_name,
+                 ota_st.rollback_possible ? "YES" : "NO");
+        atlas_gfx_draw_string(fb, 25, 94,  buf, COLOR_TEXT_MAIN, 0x0001, 1);
+
+        atlas_gfx_draw_string(fb, 25, 110, "Flash : 16 MB QIO (Atlas firmware)", COLOR_TEXT_MAIN, 0x0001, 1);
+        atlas_gfx_draw_string(fb, 25, 126, "Trigger: Button B held at boot",     COLOR_YELLOW,    0x0001, 1);
 
         /* Actions card */
-        atlas_gfx_fill_rect(fb, 15, 160, 290, 66, COLOR_PANEL_BG);
-        atlas_gfx_draw_rect(fb, 15, 160, 290, 66, COLOR_BORDER_NORM);
-        atlas_gfx_draw_string(fb, 25, 168, "[A] Continue to Atlas OS", COLOR_GREEN,  0x0001, 1);
-        atlas_gfx_draw_string(fb, 25, 184, "[D] Reboot",               COLOR_CYAN,   0x0001, 1);
+        atlas_gfx_fill_rect(fb, 15, 158, 290, 72, COLOR_PANEL_BG);
+        atlas_gfx_draw_rect(fb, 15, 158, 290, 72, COLOR_BORDER_NORM);
+        atlas_gfx_draw_string(fb, 25, 164, "[A] Continue to Atlas OS", COLOR_GREEN,  0x0001, 1);
+        atlas_gfx_draw_string(fb, 25, 178, "[D] Reboot",               COLOR_CYAN,   0x0001, 1);
+
+        if (ota_st.rollback_possible) {
+            atlas_gfx_draw_string(fb, 25, 192, "[B] Rollback Firmware", COLOR_YELLOW, 0x0001, 1);
+        }
 
         if (!nvs_erase_armed) {
-            atlas_gfx_draw_string(fb, 25, 200, "[C] Erase NVS (press again to confirm)",
+            atlas_gfx_draw_string(fb, 25, 206, "[C] Erase NVS (press again to confirm)",
                                   COLOR_ORANGE, 0x0001, 1);
         } else {
             /* Armed: show countdown and require a second press */
             int secs_left = (confirm_countdown + 24) / 25; /* ceil to seconds at 40 ms */
-            snprintf(buf, sizeof(buf), "[C] CONFIRM ERASE NVS (%d s) or wait to cancel", secs_left);
-            atlas_gfx_draw_string(fb, 25, 200, buf, COLOR_RED, 0x0001, 1);
+            snprintf(buf, sizeof(buf), "[C] CONFIRM ERASE NVS (%d s) or wait", secs_left);
+            atlas_gfx_draw_string(fb, 25, 206, buf, COLOR_RED, 0x0001, 1);
         }
 
         atlas_display_flush(0, 0, ATLAS_LCD_WIDTH - 1, ATLAS_LCD_HEIGHT - 1, fb);
@@ -111,6 +124,18 @@ void screen_recovery_run(void)
         if (in.btn_a && !last_btn_a) {
             ESP_LOGI(TAG, "User selected Continue — returning to normal boot.");
             running = false;
+        }
+
+        /* B: rollback firmware (if possible) */
+        if (in.btn_b && !last_btn_b && ota_st.rollback_possible) {
+            ESP_LOGW(TAG, "User triggered rollback from recovery safe mode!");
+            atlas_gfx_draw_string_centered(fb, 134, ">> ROLLING BACK FIRMWARE <<", COLOR_YELLOW, 0x0001, 1);
+            atlas_display_flush(0, 0, ATLAS_LCD_WIDTH - 1, ATLAS_LCD_HEIGHT - 1, fb);
+            atlas_display_wait_flush();
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            free(fb);
+            atlas_ota_rollback();
+            return; /* unreachable */
         }
 
         /* C: arm erase on first press, execute on second press while armed */
@@ -146,6 +171,7 @@ void screen_recovery_run(void)
         }
 
         last_btn_a = in.btn_a;
+        last_btn_b = in.btn_b;
         last_btn_c = in.btn_c;
         last_btn_d = in.btn_d;
 

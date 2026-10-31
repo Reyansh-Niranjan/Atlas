@@ -94,6 +94,21 @@ esp_err_t app_manager_get_by_id(const char *app_id, atlas_app_t *out_app);
 esp_err_t app_manager_launch(const char *app_id);
 
 /**
+ * @brief Safely uninstall an installed application package.
+ *
+ * Safety guarantees:
+ * - Built-in applications cannot be uninstalled (returns ESP_ERR_NOT_SUPPORTED).
+ * - Application ID is validated to prevent directory traversal.
+ * - Recursively deletes the package bundle directory on SD card.
+ * - Updates in-memory catalogue and emits ATLAS_EVENT_APP_CATALOGUE_CHANGED.
+ *
+ * @param app_id Stable application identifier.
+ * @return ESP_OK on success, ESP_ERR_NOT_FOUND if not present,
+ *         ESP_ERR_NOT_SUPPORTED if built-in, or filesystem error.
+ */
+esp_err_t app_manager_uninstall(const char *app_id);
+
+/**
  * @brief Ensure boot partition points to Atlas OS image.
  */
 esp_err_t app_manager_ensure_boot_os(void);

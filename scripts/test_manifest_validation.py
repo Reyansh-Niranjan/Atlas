@@ -7,8 +7,12 @@ import os
 import sys
 import json
 import shutil
+import tempfile
 
-TEST_BASE = "E:\\apps\\installed"
+if os.path.exists("E:\\"):
+    TEST_BASE = "E:\\apps\\installed"
+else:
+    TEST_BASE = os.path.join(tempfile.gettempdir(), "atlas_test_apps", "installed")
 
 def setup_test_env():
     if not os.path.exists(TEST_BASE):

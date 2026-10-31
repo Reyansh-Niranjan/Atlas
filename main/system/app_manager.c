@@ -6,6 +6,7 @@
 #include "atlas_log.h"
 #include "atlas_event.h"
 #include "atlas_sdcard.h"
+#include "atlas_ota.h"
 #include "screen_settings.h"
 
 #include <stdio.h>
@@ -402,13 +403,91 @@ esp_err_t app_manager_launch(const char *app_id)
     return ESP_ERR_NOT_SUPPORTED;
 }
 
+/* ── Directory Cleanup Helper ────────────────────────────────────────────── */
+
+static esp_err_t rm_dir_recursive(const char *path)
+{
+    DIR *dir = opendir(path);
+    if (!dir) {
+        return (unlink(path) == 0) ? ESP_OK : ESP_FAIL;
+    }
+
+    struct dirent *de;
+    while ((de = readdir(dir)) != NULL) {
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) {
+            continue;
+        }
+
+        char child[ATLAS_APP_PATH_MAX_LEN + 64];
+        snprintf(child, sizeof(child), "%s/%s", path, de->d_name);
+
+        struct stat st;
+        if (stat(child, &st) == 0) {
+            if (S_ISDIR(st.st_mode)) {
+                rm_dir_recursive(child);
+            } else {
+                unlink(child);
+            }
+        }
+    }
+    closedir(dir);
+    return (rmdir(path) == 0) ? ESP_OK : ESP_FAIL;
+}
+
+esp_err_t app_manager_uninstall(const char *app_id)
+{
+    if (!app_id || !is_valid_app_id(app_id)) return ESP_ERR_INVALID_ARG;
+    if (!s_app_mutex) app_manager_init();
+    if (xSemaphoreTake(s_app_mutex, portMAX_DELAY) != pdTRUE) return ESP_ERR_TIMEOUT;
+
+    int found_idx = -1;
+    for (size_t i = 0; i < s_app_count; i++) {
+        if (strncmp(s_apps[i].app_id, app_id, sizeof(s_apps[i].app_id)) == 0) {
+            found_idx = (int)i;
+            break;
+        }
+    }
+
+    if (found_idx < 0) {
+        xSemaphoreGive(s_app_mutex);
+        ATLAS_LOG_WARN(ATLAS_LOG_TAG_APP, "Uninstall failed: app '%s' not registered.", app_id);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    /* Built-in applications CANNOT be uninstalled */
+    if (s_apps[found_idx].type == ATLAS_APP_TYPE_BUILTIN) {
+        xSemaphoreGive(s_app_mutex);
+        ATLAS_LOG_ERROR(ATLAS_LOG_TAG_APP, "Cannot uninstall built-in application '%s'.", app_id);
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    /* Delete package directory from SD card */
+    char app_dir[ATLAS_APP_PATH_MAX_LEN];
+    snprintf(app_dir, sizeof(app_dir), "%s", s_apps[found_idx].app_dir);
+
+    /* Double check path is inside /sdcard/apps/installed/ */
+    if (strncmp(app_dir, APPS_INSTALLED_DIR, strlen(APPS_INSTALLED_DIR)) == 0 &&
+        strstr(app_dir, "..") == NULL) {
+        ATLAS_LOG_INFO(ATLAS_LOG_TAG_APP, "Removing package files at %s...", app_dir);
+        rm_dir_recursive(app_dir);
+    }
+
+    /* Shift remaining apps down */
+    for (size_t i = (size_t)found_idx; i + 1 < s_app_count; i++) {
+        s_apps[i] = s_apps[i + 1];
+    }
+    s_app_count--;
+    memset(&s_apps[s_app_count], 0, sizeof(atlas_app_t));
+
+    xSemaphoreGive(s_app_mutex);
+    ATLAS_LOG_INFO(ATLAS_LOG_TAG_APP, "Package '%s' uninstalled successfully.", app_id);
+
+    atlas_event_post(ATLAS_EVENT_APP_CATALOGUE_CHANGED, NULL, 0, 0);
+    return ESP_OK;
+}
+
 esp_err_t app_manager_ensure_boot_os(void)
 {
-    const esp_partition_t *running = esp_ota_get_running_partition();
-    if (running) {
-        ATLAS_LOG_INFO(ATLAS_LOG_TAG_APP, "Running Atlas OS on partition '%s' (0x%lx)",
-                       running->label, (unsigned long)running->address);
-    }
-    return ESP_OK;
+    return atlas_ota_validate_boot();
 }
 

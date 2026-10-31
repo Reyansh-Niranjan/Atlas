@@ -265,6 +265,7 @@ static esp_err_t boot_stage_services(void)
     app_manager_scan_installed();
 
     atlas_service_register("app_manager", "Dynamic Application Manager & Lifecycle", NULL, NULL, NULL);
+    atlas_service_register("ota", "OTA Firmware Update & Partition Safety Engine", NULL, NULL, NULL);
 
     boot_advance_stage(ATLAS_BOOT_STAGE_SERVICES, "services", ESP_OK);
     return ESP_OK;

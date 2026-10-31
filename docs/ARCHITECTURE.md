@@ -198,3 +198,17 @@ app.apkg
 }
 ```
 
+---
+
+## 6. Firmware Upgrade & OTA Safety Architecture (`system/atlas_ota`)
+
+ATLAS OS distinguishes **system firmware upgrades** from **application lifecycle execution**. The `atlas_ota` subsystem governs all partition writes and boot targets:
+
+### 6.1 Safety Invariants
+1. **Never Overwrite Running Partition:** Inactive OTA slot is resolved dynamically via `esp_ota_get_next_update_partition(NULL)` and strictly asserted `target != running`.
+2. **Pre-Flash Architecture Validation:** Before erasing or writing flash, the image header is inspected to guarantee magic byte `0xE9` and ESP32-S3 chip ID `0x0009`.
+3. **Hardware Rollback Integration:** Built with `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`. Newly installed images boot in `ESP_OTA_IMG_PENDING_VERIFY`. If boot diagnostics fail or the image crashes, the bootloader automatically reverts to the previous valid slot.
+4. **Boot Health Validation:** Upon completing Stage 7 system boot, `atlas_ota_validate_boot()` confirms operational health and cancels pending rollback via `esp_ota_mark_app_valid_cancel_rollback()`.
+5. **Emergency Recovery Rollback:** In Recovery Safe Mode (`screen_recovery.c`), pressing Button B triggers immediate rollback if a fallback partition is detected.
+
+

@@ -36,6 +36,9 @@ CONFIG_FATFS_MAX_LFN=255
 # ── SPI ───────────────────────────────────────────────────────────────────────
 CONFIG_SPI_MASTER_IN_IRAM=y
 
+# ── OTA & Rollback ────────────────────────────────────────────────────────────
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_LOG_MAXIMUM_LEVEL_INFO=y

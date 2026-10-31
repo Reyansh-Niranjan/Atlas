@@ -5,6 +5,8 @@
  * See app_registry.h for the architecture rationale.
  */
 #include "app_registry.h"
+#include "app_manager.h"
+#include "atlas_ota.h"
 #include "screen_settings.h"
 
 #include <string.h>
@@ -226,100 +228,15 @@ esp_err_t app_registry_register(const atlas_app_entry_t *entry)
 
 esp_err_t app_registry_uninstall(const char *app_id)
 {
-    if (!app_id) return ESP_ERR_INVALID_ARG;
-    if (xSemaphoreTake(s_reg_mutex, portMAX_DELAY) != pdTRUE) return ESP_ERR_TIMEOUT;
-
-    /* Remove SD binary if present (non-fatal if absent) */
-    char bin_path[128];
-    snprintf(bin_path, sizeof(bin_path), "/sdcard/apps/%s.bin", app_id);
-    unlink(bin_path);
-
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (err != ESP_OK) {
-        xSemaphoreGive(s_reg_mutex);
-        return err;
-    }
-
-    uint32_t count = 0;
-    nvs_get_u32(handle, NVS_KEY_APP_COUNT, &count);
-
-    bool updated = false;
-    for (uint32_t i = 0; i < count; i++) {
-        char key[16];
-        snprintf(key, sizeof(key), "app_%u", (unsigned int)i);
-        atlas_app_entry_t cur;
-        size_t req = sizeof(cur);
-        if (nvs_get_blob(handle, key, &cur, &req) == ESP_OK) {
-            if (strncmp(cur.app_id, app_id, sizeof(cur.app_id)) == 0) {
-                cur.is_installed = false;
-                nvs_set_blob(handle, key, &cur, sizeof(cur));
-                nvs_commit(handle);
-                updated = true;
-                ESP_LOGI(TAG, "Marked '%s' uninstalled.", app_id);
-                break;
-            }
-        }
-    }
-
-    nvs_close(handle);
-    xSemaphoreGive(s_reg_mutex);
-    return updated ? ESP_OK : ESP_ERR_NOT_FOUND;
+    /* Delegate to the active Application Manager */
+    return app_manager_uninstall(app_id);
 }
 
 esp_err_t app_registry_scan_sdcard(void)
 {
-    DIR *dir = opendir("/sdcard/apps");
-    if (!dir) {
-        /* Create the directory so future drops work; absence is non-fatal. */
-        mkdir("/sdcard/apps", 0777);
-        dir = opendir("/sdcard/apps");
-        if (!dir) return ESP_OK; /* no SD or no apps dir — not an error */
-    }
-
-    ESP_LOGI(TAG, "Scanning /sdcard/apps/ for .bin files (metadata only)...");
-    struct dirent *de;
-    int found = 0;
-
-    while ((de = readdir(dir)) != NULL) {
-        if (de->d_name[0] == '.') continue;
-        size_t len = strlen(de->d_name);
-        if (len <= 4 || strcmp(de->d_name + len - 4, ".bin") != 0) continue;
-
-        char app_id[32] = {0};
-        size_t id_len = len - 4;
-        if (id_len >= sizeof(app_id)) id_len = sizeof(app_id) - 1;
-        memcpy(app_id, de->d_name, id_len);
-
-        char full_path[128];
-        snprintf(full_path, sizeof(full_path), "/sdcard/apps/%s", de->d_name);
-        struct stat st;
-        uint32_t fsize = (stat(full_path, &st) == 0) ? (uint32_t)st.st_size : 0;
-
-        /* Capitalise first letter for display name */
-        char app_name[32];
-        snprintf(app_name, sizeof(app_name), "%s", app_id);
-        if (app_name[0] >= 'a' && app_name[0] <= 'z') app_name[0] -= 0x20;
-
-        atlas_app_entry_t app = {0};
-        snprintf(app.app_id,    sizeof(app.app_id),    "%s", app_id);
-        snprintf(app.app_name,  sizeof(app.app_name),  "%s", app_name);
-        snprintf(app.tagline,   sizeof(app.tagline),   "SD File (%lu KB) — not launchable",
-                 (unsigned long)(fsize / 1024));
-        snprintf(app.version,   sizeof(app.version),   "unknown");
-        snprintf(app.bin_path,  sizeof(app.bin_path),  "%s", full_path);
-        app.size         = fsize;
-        app.flash_offset = 0; /* unused */
-        app.is_installed = true;
-        app.is_staged    = false;
-
-        app_registry_register(&app);
-        found++;
-        ESP_LOGI(TAG, "Indexed SD file: %s (%lu KB)", full_path, (unsigned long)(fsize / 1024));
-    }
-    closedir(dir);
-    ESP_LOGI(TAG, "SD scan complete: %d file(s) indexed.", found);
-    return ESP_OK;
+    /* SD application scanning is now owned by app_manager via manifests in /sdcard/apps/installed/ */
+    ESP_LOGI(TAG, "Legacy SD scan: delegating to app_manager_scan_installed().");
+    return app_manager_scan_installed();
 }
 
 atlas_app_handler_t app_registry_get_handler(const char *app_id)
@@ -335,149 +252,18 @@ atlas_app_handler_t app_registry_get_handler(const char *app_id)
 
 esp_err_t app_registry_launch(const char *app_id)
 {
-    if (!app_id) return ESP_ERR_INVALID_ARG;
-
-    atlas_app_entry_t entry;
-    esp_err_t err = app_registry_get(app_id, &entry);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "app_registry_launch: '%s' not in registry.", app_id);
-        return err;
-    }
-
-    atlas_app_handler_t fn = app_registry_get_handler(app_id);
-    if (!fn) {
-        ESP_LOGW(TAG, "app_registry_launch: '%s' has no compiled handler (not implemented).", app_id);
-        return ESP_ERR_NOT_SUPPORTED;
-    }
-
-    ESP_LOGI(TAG, "Dispatching in-firmware app: %s (%s)", entry.app_name, app_id);
-    fn();
-    return ESP_OK;
+    return app_manager_launch(app_id);
 }
 
 esp_err_t app_registry_ensure_boot_os(void)
 {
-    /* Prefer ota_0 (the Atlas OS slot); fall back to factory if no ota_0. */
-    const esp_partition_t *target = esp_partition_find_first(
-        ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, NULL);
-    if (!target) {
-        target = esp_partition_find_first(
-            ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
-    }
-    if (!target) {
-        ESP_LOGE(TAG, "ensure_boot_os: no ota_0 or factory partition found!");
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    const esp_partition_t *boot_part = esp_ota_get_boot_partition();
-    if (boot_part != target) {
-        ESP_LOGI(TAG, "Resetting boot target to Atlas OS (%s).", target->label);
-        return esp_ota_set_boot_partition(target);
-    }
-    return ESP_OK;
+    return atlas_ota_validate_boot();
 }
 
-/* ── Firmware update (separate path, explicit user action only) ──────────── */
+/* ── Firmware update (delegates to atlas_ota engine) ────────────────────── */
 
 esp_err_t atlas_fw_update_from_sd(const char *bin_path,
                                   void (*progress_cb)(size_t written, size_t total))
 {
-    if (!bin_path || strlen(bin_path) == 0) return ESP_ERR_INVALID_ARG;
-
-    /* 1. Open file */
-    FILE *f = fopen(bin_path, "rb");
-    if (!f) {
-        ESP_LOGE(TAG, "fw_update: cannot open %s", bin_path);
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    fseek(f, 0, SEEK_END);
-    size_t total_size = (size_t)ftell(f);
-    fseek(f, 0, SEEK_SET);
-
-    if (total_size == 0) {
-        fclose(f);
-        ESP_LOGE(TAG, "fw_update: file is empty");
-        return ESP_ERR_INVALID_SIZE;
-    }
-
-    /* 2. Locate the inactive OTA partition */
-    const esp_partition_t *update_part = esp_ota_get_next_update_partition(NULL);
-    if (!update_part) {
-        fclose(f);
-        ESP_LOGE(TAG, "fw_update: no OTA update partition available");
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    if (total_size > update_part->size) {
-        fclose(f);
-        ESP_LOGE(TAG, "fw_update: file %u bytes > partition %lu bytes",
-                 (unsigned int)total_size, (unsigned long)update_part->size);
-        return ESP_ERR_INVALID_SIZE;
-    }
-
-    /* 3. Quick sanity-check image magic before touching flash.
-     * Full image validation (hash, secure-boot signature) is performed
-     * internally by esp_ota_end(); no need to call esp_image_verify() here. */
-    uint8_t hdr_buf[8];
-    size_t hdr_read = fread(hdr_buf, 1, sizeof(hdr_buf), f);
-    fseek(f, 0, SEEK_SET);
-
-    if (hdr_read < 8 || hdr_buf[0] != 0xE9) {
-        fclose(f);
-        ESP_LOGE(TAG, "fw_update: invalid ESP image magic (0x%02X, expected 0xE9)", hdr_buf[0]);
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    ESP_LOGI(TAG, "fw_update: writing %u bytes to partition '%s'...",
-             (unsigned int)total_size, update_part->label);
-
-    /* 4. Begin OTA session */
-    esp_ota_handle_t ota_handle;
-    esp_err_t err = esp_ota_begin(update_part, total_size, &ota_handle);
-    if (err != ESP_OK) {
-        fclose(f);
-        ESP_LOGE(TAG, "esp_ota_begin failed: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    /* 5. Stream file to flash */
-    uint8_t buf[4096];
-    size_t bytes_written = 0;
-    while (bytes_written < total_size) {
-        size_t to_read = sizeof(buf);
-        if (bytes_written + to_read > total_size) to_read = total_size - bytes_written;
-        size_t n = fread(buf, 1, to_read, f);
-        if (n == 0) break;
-
-        err = esp_ota_write(ota_handle, buf, n);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "esp_ota_write failed: %s", esp_err_to_name(err));
-            esp_ota_abort(ota_handle);
-            fclose(f);
-            return err;
-        }
-        bytes_written += n;
-        if (progress_cb) progress_cb(bytes_written, total_size);
-    }
-    fclose(f);
-
-    /* 6. Finalise (includes image validation) */
-    err = esp_ota_end(ota_handle);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_ota_end failed: %s (image invalid?)", esp_err_to_name(err));
-        return err;
-    }
-
-    /* 7. Commit boot target and reboot */
-    err = esp_ota_set_boot_partition(update_part);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_ota_set_boot_partition failed: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    ESP_LOGI(TAG, "Firmware update complete. Rebooting into %s...", update_part->label);
-    vTaskDelay(pdMS_TO_TICKS(150));
-    esp_restart();
-    return ESP_OK; /* unreachable */
+    return atlas_ota_update_from_file(bin_path, progress_cb);
 }
