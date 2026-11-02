@@ -1,20 +1,20 @@
 ---
 name: code
-description: Orchestrated engineering workflow for general ATLAS firmware development and implementation. Activates codebase-design, domain-modeling, improve-codebase-architecture, karpathy-guidelines, ponytail, ponytail-audit, and slopmonster under embedded hardware constraints.
+description: Orchestrated engineering workflow for general ATLAS firmware development and implementation. Activates codebase-design, domain-modeling, improve-codebase-architecture, karpathy-guidelines, ponytail, ponytail-audit, slopmonster, and context7 under embedded hardware constraints.
 ---
 
 # `/code` — ATLAS Engineering Implementation Workflow
 
 Use this orchestrator for general development, feature implementation, and code modifications in the ATLAS project (`D:\Atlas`).
 
-This workflow coordinates exactly seven specialist skills to produce disciplined, minimal, and hardware-verified embedded code.
+This workflow coordinates exactly eight specialist skills to produce disciplined, minimal, and hardware-verified embedded code.
 
 ---
 
 ## 1. Skill Activation Manifest
 
-### Exactly Activated Skills (7)
-You **MUST** load and apply the following seven specialist skills before implementing changes. Inspect their instructions at their project-local paths:
+### Exactly Activated Skills (8)
+You **MUST** load and apply the following eight specialist skills before implementing changes. Inspect their instructions at their project-local paths:
 1. [`codebase-design`](file:///D:/Atlas/.agents/skills/codebase-design/SKILL.md): Deep modules (small interface, substantial implementation), Michael Feathers seams, testable leverage, and locality.
 2. [`domain-modeling`](file:///D:/Atlas/.agents/skills/domain-modeling/SKILL.md): Precise domain language, architectural boundary definitions, and alignment with architecture specifications.
 3. [`improve-codebase-architecture`](file:///D:/Atlas/.agents/skills/improve-codebase-architecture/SKILL.md): Detection and elimination of shallow wrappers, boundary leaks, and architectural friction.
@@ -22,6 +22,7 @@ You **MUST** load and apply the following seven specialist skills before impleme
 5. [`ponytail`](file:///D:/Atlas/.agents/skills/ponytail/SKILL.md): Senior developer laziness (YAGNI, standard library and ESP-IDF native features first, minimal code, avoid speculative abstractions).
 6. [`ponytail-audit`](file:///D:/Atlas/.agents/skills/ponytail-audit/SKILL.md): Diff and module scanning for bloat, dead code, single-caller abstractions, and complexity creep.
 7. [`slopmonster`](file:///D:/Atlas/.agents/skills/slopmonster/SKILL.md): Elimination of AI boilerplate, excessive commentary, defensive over-engineering, and generated-code slop.
+8. [`context7`](file:///D:/Atlas/.agents/skills/context7/SKILL.md): Authoritative documentation lookup via `ctx7 library` and `ctx7 docs`. Look up unfamiliar APIs before implementation, verify version-specific signatures, and check configuration options to prevent hallucinated or outdated APIs. Research-only; cross-check against ATLAS codebase.
 
 ### Explicitly Excluded Skills
 - **`diagnosing-bugs`**: DO NOT ACTIVATE. Bug diagnosis belongs exclusively to `/debug`.
@@ -61,23 +62,27 @@ Every code change must adhere to the physical realities of the ATLAS hardware pl
 
 When `/code` is triggered:
 
-1. **Read ATLAS Project Instructions:** Inspect `docs/ARCHITECTURE.md`, `docs/OTA_AND_LAUNCH_AUDIT.md`, and relevant subsystem headers.
-2. **Load and Apply Assigned Skills:** Explicitly read the 7 assigned skill files and internalize their constraints.
+1. **Read ATLAS Project Instructions & Rules:** Inspect `docs/ARCHITECTURE.md`, `docs/OTA_AND_LAUNCH_AUDIT.md`, `AGENTS.md`, and applicable ECC rules in [`.agents/rules/`](file:///D:/Atlas/.agents/rules/README.md). Apply ECC C++ rules conditionally under PlatformIO and embedded constraints.
+2. **Load and Apply Assigned Skills:** Explicitly read the 8 assigned skill files and internalize their constraints.
 3. **Inspect Existing Implementation:** Read the exact files to be modified before proposing or writing code.
 4. **Understand Subsystem Boundaries:** Identify affected FreeRTOS tasks, event dispatches, memory domains, and driver interfaces.
-5. **Follow an Approved Plan:** If an approved implementation plan exists in the conversation, strictly follow its scope and order.
-6. **Establish Scope (If No Plan Exists):** Define the exact minimal change required. Do not expand scope unilaterally.
-7. **Implement Focused, Incremental Changes:**
+5. **Look Up Documentation & APIs (Context7):** When working with external framework APIs (ESP-IDF v6.0.1, FreeRTOS, LittleFS):
+   - Query `npx ctx7@latest library <name>` then `npx ctx7@latest docs <id> "<query>"` for verified function prototypes, parameter types, and configuration structs.
+   - Cross-check retrieved API docs against the existing ATLAS codebase and ESP32-S3 hardware constraints.
+   - Context7 is strictly research-only: do not introduce unrequested external dependencies or modify architecture without approval.
+6. **Follow an Approved Plan:** If an approved implementation plan exists in the conversation, strictly follow its scope and order.
+7. **Establish Scope (If No Plan Exists):** Define the exact minimal change required. Do not expand scope unilaterally.
+8. **Implement Focused, Incremental Changes:**
    - Apply the **Ponytail ladder**: YAGNI → reuse existing codebase helper → stdlib/ESP-IDF feature → minimal code.
    - Apply **Karpathy surgical editing**: change only what is required; do not reformat adjacent lines or touch working code.
    - Apply **Codebase Design**: keep interfaces narrow and modules deep; avoid shallow pass-through functions.
-8. **Avoid Speculative Abstractions:** Do not create generic layers, extra configuration flags, or unused extensibility.
-9. **Validate Every Change:** Ensure memory allocations check for NULL, verify DMA buffers are in DMA-capable memory, and validate FreeRTOS task parameters.
-10. **Run Builds and Verification:** Execute PlatformIO build (`pio run`) to confirm clean compilation and zero warnings.
-11. **Audit Final Changes (Ponytail-Audit & SlopMonster):**
+9. **Avoid Speculative Abstractions:** Do not create generic layers, extra configuration flags, or unused extensibility.
+10. **Validate Every Change:** Ensure memory allocations check for NULL, verify DMA buffers are in DMA-capable memory, and validate FreeRTOS task parameters.
+11. **Run Builds and Verification:** Execute PlatformIO build (`pio run`) to confirm clean compilation and zero warnings.
+12. **Audit Final Changes (Ponytail-Audit & SlopMonster):**
     - Scan diff for dead code, orphan headers, single-caller wrappers, and unnecessary comments.
     - Remove AI slop (e.g. "comprehensive", "seamless", over-commented obvious code).
-12. **Report Engineering Results:**
+13. **Report Engineering Results:**
     - Modified/created files with clickable paths.
     - Architectural decisions and trade-offs made.
     - Compilation/test results.
