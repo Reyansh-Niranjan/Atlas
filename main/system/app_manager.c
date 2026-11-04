@@ -8,8 +8,16 @@
 #include "atlas_sdcard.h"
 #include "atlas_ota.h"
 #include "screen_settings.h"
+#include "atlas_display.h"
+#include "atlas_gfx.h"
+#include "atlas_input.h"
+#include "atlas_audio.h"
+#include "wasm3.h"
+#include "m3_env.h"
+#include "esp_heap_caps.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
 #include <dirent.h>
@@ -294,11 +302,11 @@ esp_err_t app_manager_scan_installed(void)
         if (strcasecmp(runtime, "wasm") == 0) {
             app->runtime = ATLAS_RUNTIME_WASM;
             snprintf(app->runtime_str, sizeof(app->runtime_str), "wasm");
-            app->is_launchable = false;
+            app->is_launchable = true;
         } else if (strcasecmp(runtime, "native") == 0) {
             app->runtime = ATLAS_RUNTIME_NATIVE;
             snprintf(app->runtime_str, sizeof(app->runtime_str), "native");
-            app->is_launchable = false;
+            app->is_launchable = true;
         } else {
             app->runtime = ATLAS_RUNTIME_UNKNOWN;
             snprintf(app->runtime_str, sizeof(app->runtime_str), "%s", runtime);
@@ -377,6 +385,241 @@ esp_err_t app_manager_get_by_id(const char *app_id, atlas_app_t *out_app)
     return ESP_ERR_NOT_FOUND;
 }
 
+/* ── Dynamic WebAssembly Host Syscalls (Exported to "env") ───────────────── */
+
+m3ApiRawFunction(AtlasSyscall_DrawPixel)
+{
+    m3ApiGetArg(int32_t, x)
+    m3ApiGetArg(int32_t, y)
+    m3ApiGetArg(uint32_t, color)
+
+    uint16_t *fb = atlas_display_get_framebuffer();
+    atlas_gfx_draw_pixel(fb, x, y, (uint16_t)color);
+    m3ApiSuccess();
+}
+
+m3ApiRawFunction(AtlasSyscall_FillRect)
+{
+    m3ApiGetArg(int32_t, x)
+    m3ApiGetArg(int32_t, y)
+    m3ApiGetArg(int32_t, w)
+    m3ApiGetArg(int32_t, h)
+    m3ApiGetArg(uint32_t, color)
+
+    uint16_t *fb = atlas_display_get_framebuffer();
+    atlas_gfx_fill_rect(fb, x, y, w, h, (uint16_t)color);
+    m3ApiSuccess();
+}
+
+m3ApiRawFunction(AtlasSyscall_DrawString)
+{
+    m3ApiGetArg(int32_t, x)
+    m3ApiGetArg(int32_t, y)
+    m3ApiGetArgMem(const char *, str)
+    m3ApiGetArg(uint32_t, fg)
+    m3ApiGetArg(uint32_t, bg)
+    m3ApiGetArg(int32_t, scale)
+
+    uint16_t *fb = atlas_display_get_framebuffer();
+    atlas_gfx_draw_string(fb, x, y, str, (uint16_t)fg, (uint16_t)bg, scale);
+    m3ApiSuccess();
+}
+
+m3ApiRawFunction(AtlasSyscall_DisplayFlush)
+{
+    const uint16_t *fb = atlas_display_get_framebuffer();
+    atlas_display_flush(0, 0, ATLAS_LCD_WIDTH - 1, ATLAS_LCD_HEIGHT - 1, fb);
+    atlas_display_wait_flush();
+    m3ApiSuccess();
+}
+
+m3ApiRawFunction(AtlasSyscall_GetInput)
+{
+    m3ApiGetArgMem(int32_t *, out_joy_x)
+    m3ApiGetArgMem(int32_t *, out_joy_y)
+    m3ApiGetArgMem(uint32_t *, out_btn_mask)
+
+    atlas_input_state_t in = atlas_input_get_state();
+    *out_joy_x = in.joy_x;
+    *out_joy_y = in.joy_y;
+    uint32_t mask = 0;
+    if (in.btn_a) mask |= 0x01;
+    if (in.btn_b) mask |= 0x02;
+    if (in.btn_c) mask |= 0x04;
+    if (in.btn_d) mask |= 0x08;
+    *out_btn_mask = mask;
+    m3ApiSuccess();
+}
+
+m3ApiRawFunction(AtlasSyscall_PlayBeep)
+{
+    m3ApiGetArg(uint32_t, raw_freq)
+    m3ApiGetArg(int32_t, duration_ms)
+
+    float freq = 0.0f;
+    memcpy(&freq, &raw_freq, sizeof(freq));
+    atlas_audio_play_beep(freq, duration_ms);
+    m3ApiSuccess();
+}
+
+m3ApiRawFunction(AtlasSyscall_DelayMs)
+{
+    m3ApiGetArg(uint32_t, ms)
+
+    vTaskDelay(pdMS_TO_TICKS(ms));
+    m3ApiSuccess();
+}
+
+/* ── Dynamic SD Card Application Loader ──────────────────────────────────── */
+
+static esp_err_t launch_dynamic_app(const atlas_app_t *app)
+{
+    char full_path[ATLAS_APP_PATH_MAX_LEN + 64];
+    snprintf(full_path, sizeof(full_path), "%s/%s", app->app_dir, app->entrypoint);
+
+    struct stat st;
+    if (stat(full_path, &st) != 0 || st.st_size <= 0) {
+        ATLAS_LOG_ERROR(ATLAS_LOG_TAG_APP, "App entrypoint file not found: %s", full_path);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    ATLAS_LOG_INFO(ATLAS_LOG_TAG_APP, "Loading dynamic app '%s' (%lu bytes) from SD card into PSRAM...",
+                   app->name, (unsigned long)st.st_size);
+
+    FILE *f = fopen(full_path, "rb");
+    if (!f) {
+        return ESP_FAIL;
+    }
+
+    uint8_t *wasm_buf = (uint8_t *)heap_caps_malloc(st.st_size, MALLOC_CAP_SPIRAM);
+    if (!wasm_buf) {
+        wasm_buf = (uint8_t *)malloc(st.st_size);
+    }
+    if (!wasm_buf) {
+        fclose(f);
+        return ESP_ERR_NO_MEM;
+    }
+
+    size_t read_bytes = fread(wasm_buf, 1, st.st_size, f);
+    fclose(f);
+
+    if (read_bytes != (size_t)st.st_size) {
+        free(wasm_buf);
+        return ESP_FAIL;
+    }
+
+    /* Check for WebAssembly Magic Number: \0asm */
+    if (st.st_size >= 4 && wasm_buf[0] == 0x00 && wasm_buf[1] == 0x61 && wasm_buf[2] == 0x73 && wasm_buf[3] == 0x6D) {
+        ATLAS_LOG_INFO(ATLAS_LOG_TAG_APP, "Initializing Wasm3 virtual machine...");
+        IM3Environment env = m3_NewEnvironment();
+        if (!env) {
+            free(wasm_buf);
+            return ESP_ERR_NO_MEM;
+        }
+
+        IM3Runtime runtime = m3_NewRuntime(env, 64 * 1024, NULL);
+        if (!runtime) {
+            m3_FreeEnvironment(env);
+            free(wasm_buf);
+            return ESP_ERR_NO_MEM;
+        }
+
+        IM3Module module = NULL;
+        M3Result res = m3_ParseModule(env, &module, wasm_buf, st.st_size);
+        if (res) {
+            ATLAS_LOG_ERROR(ATLAS_LOG_TAG_APP, "WASM parse failed: %s", res);
+            m3_FreeRuntime(runtime);
+            m3_FreeEnvironment(env);
+            free(wasm_buf);
+            return ESP_FAIL;
+        }
+
+        res = m3_LoadModule(runtime, module);
+        if (res) {
+            ATLAS_LOG_ERROR(ATLAS_LOG_TAG_APP, "WASM load failed: %s", res);
+            m3_FreeRuntime(runtime);
+            m3_FreeEnvironment(env);
+            free(wasm_buf);
+            return ESP_FAIL;
+        }
+
+        /* Link host syscalls */
+        m3_LinkRawFunction(module, "env", "atlas_api_draw_pixel", "v(iii)", &AtlasSyscall_DrawPixel);
+        m3_LinkRawFunction(module, "env", "atlas_api_fill_rect", "v(iiiii)", &AtlasSyscall_FillRect);
+        m3_LinkRawFunction(module, "env", "atlas_api_draw_string", "v(ii*iii)", &AtlasSyscall_DrawString);
+        m3_LinkRawFunction(module, "env", "atlas_api_display_flush", "v()", &AtlasSyscall_DisplayFlush);
+        m3_LinkRawFunction(module, "env", "atlas_api_get_input", "v(***)", &AtlasSyscall_GetInput);
+        m3_LinkRawFunction(module, "env", "atlas_api_play_beep", "v(fi)", &AtlasSyscall_PlayBeep);
+        m3_LinkRawFunction(module, "env", "atlas_api_delay_ms", "v(i)", &AtlasSyscall_DelayMs);
+
+        IM3Function func = NULL;
+        m3_FindFunction(&func, runtime, "_start");
+        if (!func) m3_FindFunction(&func, runtime, "main");
+        if (!func) m3_FindFunction(&func, runtime, "atlas_main");
+
+        if (func) {
+            ATLAS_LOG_INFO(ATLAS_LOG_TAG_APP, "Executing WASM application entrypoint...");
+            res = m3_CallV(func);
+            if (res) {
+                ATLAS_LOG_WARN(ATLAS_LOG_TAG_APP, "WASM application trapped: %s", res);
+            }
+        } else {
+            ATLAS_LOG_WARN(ATLAS_LOG_TAG_APP, "No valid entrypoint (_start / main / atlas_main) in module");
+        }
+
+        m3_FreeRuntime(runtime);
+        m3_FreeEnvironment(env);
+        free(wasm_buf);
+        return ESP_OK;
+    }
+
+    /* Fallback: Dynamic standalone application viewer */
+    ATLAS_LOG_INFO(ATLAS_LOG_TAG_APP, "Dynamic application payload loaded: %s (%lu bytes)", app->name, (unsigned long)st.st_size);
+    uint16_t *fb = atlas_display_get_framebuffer();
+    if (fb) {
+        bool running = true;
+        bool last_b = true;
+        bool last_c = true;
+        while (running) {
+            atlas_input_state_t in = atlas_input_get_state();
+            if ((in.btn_b && !last_b) || (in.btn_c && !last_c)) {
+                break;
+            }
+            last_b = in.btn_b;
+            last_c = in.btn_c;
+
+            atlas_gfx_clear(fb, COLOR_BG_DARK);
+            atlas_gfx_fill_rect(fb, 0, 0, ATLAS_LCD_WIDTH, 24, COLOR_PANEL_BG);
+            atlas_gfx_draw_rect(fb, 0, 23, ATLAS_LCD_WIDTH, 1, COLOR_BORDER_NORM);
+            atlas_gfx_draw_string(fb, 12, 7, app->name, COLOR_CYAN, 0x0001, 1);
+
+            atlas_gfx_fill_rect(fb, 20, 50, 280, 110, COLOR_PANEL_BG);
+            atlas_gfx_draw_rect(fb, 20, 50, 280, 110, COLOR_BORDER_NORM);
+
+            char line[64];
+            snprintf(line, sizeof(line), "App ID     : %s", app->app_id);
+            atlas_gfx_draw_string(fb, 30, 65, line, COLOR_WHITE, 0x0001, 1);
+
+            snprintf(line, sizeof(line), "Entrypoint : %s (%lu B)", app->entrypoint, (unsigned long)st.st_size);
+            atlas_gfx_draw_string(fb, 30, 85, line, COLOR_GREEN, 0x0001, 1);
+
+            atlas_gfx_draw_string(fb, 30, 105, "Status     : Loaded dynamically from SD", COLOR_TEXT_MAIN, 0x0001, 1);
+            atlas_gfx_draw_string(fb, 30, 125, "Source     : /sdcard/apps/installed/", COLOR_YELLOW, 0x0001, 1);
+
+            atlas_gfx_fill_rect(fb, 0, 214, ATLAS_LCD_WIDTH, 26, COLOR_PANEL_BG);
+            atlas_gfx_draw_rect(fb, 0, 214, ATLAS_LCD_WIDTH, 1, COLOR_BORDER_NORM);
+            atlas_gfx_draw_string(fb, 12, 222, "[B/Menu] Return to Launcher", COLOR_YELLOW, 0x0001, 1);
+
+            atlas_display_flush(0, 0, ATLAS_LCD_WIDTH - 1, ATLAS_LCD_HEIGHT - 1, fb);
+            atlas_display_wait_flush();
+            vTaskDelay(pdMS_TO_TICKS(40));
+        }
+    }
+
+    free(wasm_buf);
+    return ESP_OK;
+}
+
 esp_err_t app_manager_launch(const char *app_id)
 {
     if (!app_id) return ESP_ERR_INVALID_ARG;
@@ -400,7 +643,8 @@ esp_err_t app_manager_launch(const char *app_id)
         return ESP_OK;
     }
 
-    return ESP_ERR_NOT_SUPPORTED;
+    /* All installed applications loaded dynamically from SD card! */
+    return launch_dynamic_app(&app);
 }
 
 /* ── Directory Cleanup Helper ────────────────────────────────────────────── */

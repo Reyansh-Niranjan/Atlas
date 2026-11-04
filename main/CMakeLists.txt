@@ -44,6 +44,7 @@ idf_component_register(
         heap
         app_update
         esp_partition
+        wasm3
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-unused-function -Wno-format-truncation)
