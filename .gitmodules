@@ -1,0 +1,3 @@
+[submodule "APPS"]
+	path = APPS
+	url = https://github.com/Reyansh-Niranjan/APPS.git

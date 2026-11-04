@@ -34,6 +34,13 @@ extern "C" {
 #define COLOR_ORANGE          ATLAS_COLOR(255, 130, 20)
 #define COLOR_PURPLE          ATLAS_COLOR(180, 80, 255)
 
+static inline void atlas_gfx_draw_pixel(uint16_t *fb, int x, int y, uint16_t color)
+{
+    if (fb && x >= 0 && x < ATLAS_LCD_WIDTH && y >= 0 && y < ATLAS_LCD_HEIGHT) {
+        fb[y * ATLAS_LCD_WIDTH + x] = color;
+    }
+}
+
 void atlas_gfx_clear(uint16_t *fb, uint16_t color);
 void atlas_gfx_fill_rect(uint16_t *fb, int x, int y, int w, int h, uint16_t color);
 void atlas_gfx_draw_rect(uint16_t *fb, int x, int y, int w, int h, uint16_t color);

@@ -1,13 +1,23 @@
 /**
  * @file screen_home.c
- * @brief 2x2 Grid Home Launcher & Application Dispatcher for Atlas OS
+ * @brief Dynamic Grid Home Launcher for ATLAS OS
+ *
+ * Single source of truth: queries the Application Manager dynamically.
+ * Features:
+ *   - Renders 2x2 grid of genuinely registered applications.
+ *   - Supports pagination when total applications exceed 4.
+ *   - Displays empty state when no applications are available.
+ *   - Shows SD-card status in the header.
+ *   - Safely executes launchable apps and rejects unsupported runtimes with honest UI toasts.
  */
 #include "screen_home.h"
 #include "atlas_gfx.h"
 #include "atlas_display.h"
 #include "atlas_input.h"
 #include "atlas_audio.h"
-#include "app_registry.h"
+#include "atlas_sdcard.h"
+#include "atlas_event.h"
+#include "app_manager.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -19,133 +29,44 @@
 
 static const char *TAG = "screen_home";
 
-/* ── App Card Descriptor for 2x2 Launcher ────────────────────────────────── */
-typedef struct {
-    const char *id;
-    const char *title;
-    const char *tagline;
-    const char *action_c_label;
-    const char *action_d_label;
-} launcher_app_t;
+static volatile bool s_catalogue_dirty = false;
 
-static const launcher_app_t s_launcher_apps[4] = {
-    {
-        .id             = "pkg_store",
-        .title          = "APKG Store",
-        .tagline        = "Installer & OTA Hub",
-        .action_c_label = "Check Updates",
-        .action_d_label = "Manage Repos",
-    },
-    {
-        .id             = "settings",
-        .title          = "Settings",
-        .tagline        = "Telemetry & Cal",
-        .action_c_label = "Calibrate ADC",
-        .action_d_label = "System Info",
-    },
-    {
-        .id             = "novaslate",
-        .title          = "NovaSlate",
-        .tagline        = "Curriculum & Reader",
-        .action_c_label = "Sync Library",
-        .action_d_label = "Bookmarks",
-    },
-    {
-        .id             = "music",
-        .title          = "Music",
-        .tagline        = "I2S Audio Player",
-        .action_c_label = "Play / Pause",
-        .action_d_label = "Playlist",
-    }
-};
-
-/* ── Audio Feedback Helper ───────────────────────────────────────────────── */
-static uint16_t *s_home_fb = NULL;
-
-static void home_staging_progress_cb(size_t written, size_t total)
+static void on_catalogue_changed(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
-    if (!s_home_fb || total == 0) return;
-    int pct = (int)((written * 100) / total);
-
-    atlas_gfx_fill_rect(s_home_fb, 30, 80, 260, 80, COLOR_PANEL_BG);
-    atlas_gfx_draw_rect(s_home_fb, 30, 80, 260, 80, COLOR_CYAN);
-    atlas_gfx_draw_string_centered(s_home_fb, 92, "STAGING APP TO FLASH...", COLOR_CYAN, 0x0001, 1);
-
-    char pct_str[48];
-    snprintf(pct_str, sizeof(pct_str), "%d%% (%u KB / %u KB)", pct, (unsigned int)(written / 1024), (unsigned int)(total / 1024));
-    atlas_gfx_draw_string_centered(s_home_fb, 108, pct_str, COLOR_WHITE, 0x0001, 1);
-
-    int bar_w = 220;
-    int bar_h = 10;
-    int bar_x = 50;
-    int bar_y = 130;
-    int fill = (bar_w * pct) / 100;
-    atlas_gfx_draw_rect(s_home_fb, bar_x, bar_y, bar_w, bar_h, COLOR_BORDER_NORM);
-    if (fill > 0) {
-        atlas_gfx_fill_rect(s_home_fb, bar_x + 1, bar_y + 1, fill - 2 > 0 ? fill - 2 : 1, bar_h - 2, COLOR_GREEN);
-    }
-
-    atlas_display_flush(30, 80, 289, 159, s_home_fb);
-    atlas_display_wait_flush();
+    s_catalogue_dirty = true;
 }
 
-static void play_ui_beep(float freq, int duration_ms)
+static inline void play_ui_beep(float freq, int duration_ms)
 {
-    int num_samples = (44100 * duration_ms) / 1000;
-    int16_t beep_buf[128 * 2];
-    int period_samples = (int)(44100.0f / freq);
-    if (period_samples < 2) period_samples = 2;
-    int half_period = period_samples / 2;
-    int cur_sample = 0;
-
-    size_t samples_left = num_samples;
-    while (samples_left > 0) {
-        size_t chunk = samples_left > 128 ? 128 : samples_left;
-        for (size_t i = 0; i < chunk; i++) {
-            int16_t val = (cur_sample < half_period) ? 6000 : -6000;
-            cur_sample = (cur_sample + 1) % period_samples;
-            beep_buf[i * 2]     = val;
-            beep_buf[i * 2 + 1] = val;
-        }
-        size_t written = 0;
-        atlas_audio_write(beep_buf, chunk * 2, &written, pdMS_TO_TICKS(10));
-        samples_left -= chunk;
-    }
+    atlas_audio_play_beep(freq, duration_ms);
 }
 
 /* ── Primary Launcher Loop ───────────────────────────────────────────────── */
 void screen_home_run(void)
 {
-    ESP_LOGI(TAG, "Launching Atlas 2x2 Home Launcher UI...");
+    ESP_LOGI(TAG, "Launching Dynamic ATLAS Home Launcher UI...");
 
-    uint16_t *fb = (uint16_t *)heap_caps_aligned_alloc(64, ATLAS_LCD_BYTES, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    /* Borrow canonical managed framebuffer in Octal PSRAM */
+    uint16_t *fb = atlas_display_get_framebuffer();
     if (!fb) {
-        fb = (uint16_t *)heap_caps_aligned_alloc(64, ATLAS_LCD_BYTES, MALLOC_CAP_SPIRAM);
-    }
-    if (!fb) {
-        ESP_LOGE(TAG, "Failed to allocate home framebuffer!");
+        ESP_LOGE(TAG, "Managed framebuffer unavailable — cannot render UI.");
         return;
     }
 
-    /* Load dynamic applications from NVS and SD card */
-    atlas_app_entry_t reg_apps[4];
-    size_t reg_count = 0;
-    app_registry_get_all(reg_apps, 4, &reg_count);
+    /* Subscribe to application catalogue change events */
+    atlas_event_register_handler(ATLAS_EVENT_APP_CATALOGUE_CHANGED, on_catalogue_changed, NULL);
 
-    int active_row = 0;
-    int active_col = 0;
-    bool joy_edge_latched = false;
+    int current_page = 0;
+    int active_row   = 0;
+    int active_col   = 0;
+    bool joy_latched = false;
     bool needs_redraw = true;
 
-    /* Debounce state trackers */
-    bool last_btn_a = false;
-    bool last_btn_b = false;
-    bool last_btn_c = false;
-    bool last_btn_d = false;
+    bool last_btn_a = false, last_btn_b = false;
+    bool last_btn_c = false, last_btn_d = false;
 
-    /* Temporary Toast Notification */
     char toast_msg[64] = {0};
-    int toast_timer = 0;
+    int  toast_timer   = 0;
 
     const int CARD_W = 145;
     const int CARD_H = 76;
@@ -153,92 +74,167 @@ void screen_home_run(void)
     const int ROW_Y[2] = {34, 118};
 
     while (true) {
+        if (s_catalogue_dirty) {
+            s_catalogue_dirty = false;
+            needs_redraw = true;
+        }
+
+        size_t total_apps = app_manager_get_count();
+        int total_pages   = (total_apps == 0) ? 1 : (int)((total_apps + 3) / 4);
+
+        if (current_page >= total_pages) {
+            current_page = total_pages - 1;
+            needs_redraw = true;
+        }
+
+        int page_start = current_page * 4;
+        int page_apps  = 0;
+        if ((int)total_apps > page_start) {
+            page_apps = (int)total_apps - page_start;
+            if (page_apps > 4) page_apps = 4;
+        }
+
+        /* Clamp active selection to available cards on this page */
+        if (page_apps > 0) {
+            int cur_idx = active_row * 2 + active_col;
+            if (cur_idx >= page_apps) {
+                active_row = (page_apps - 1) / 2;
+                active_col = (page_apps - 1) % 2;
+                needs_redraw = true;
+            }
+        }
+
         atlas_input_state_t in = atlas_input_get_state();
 
-        /* 1. Joystick Edge-Detected Navigation */
-        if (!joy_edge_latched) {
-            if (in.joy_x > 50 && active_col == 0) {
-                active_col = 1;
-                joy_edge_latched = true;
-                needs_redraw = true;
-                play_ui_beep(880.0f, 15);
-            } else if (in.joy_x < -50 && active_col == 1) {
-                active_col = 0;
-                joy_edge_latched = true;
-                needs_redraw = true;
-                play_ui_beep(880.0f, 15);
-            }
+        /* ── Joystick navigation (edge-detected) ─────────────────────────── */
+        if (!joy_latched) {
+            if (page_apps > 0) {
+                if (in.joy_x > 50) {
+                    if (active_col == 0 && (active_row * 2 + 1) < page_apps) {
+                        active_col = 1;
+                        joy_latched = true;
+                        needs_redraw = true;
+                        play_ui_beep(880.0f, 15);
+                    } else if (current_page < total_pages - 1) {
+                        /* Next page */
+                        current_page++;
+                        active_col = 0;
+                        joy_latched = true;
+                        needs_redraw = true;
+                        play_ui_beep(980.0f, 20);
+                    }
+                } else if (in.joy_x < -50) {
+                    if (active_col == 1) {
+                        active_col = 0;
+                        joy_latched = true;
+                        needs_redraw = true;
+                        play_ui_beep(880.0f, 15);
+                    } else if (current_page > 0) {
+                        /* Prev page */
+                        current_page--;
+                        active_col = 1;
+                        joy_latched = true;
+                        needs_redraw = true;
+                        play_ui_beep(780.0f, 20);
+                    }
+                }
 
-            if (in.joy_y > 50 && active_row == 0) {
-                active_row = 1;
-                joy_edge_latched = true;
-                needs_redraw = true;
-                play_ui_beep(880.0f, 15);
-            } else if (in.joy_y < -50 && active_row == 1) {
-                active_row = 0;
-                joy_edge_latched = true;
-                needs_redraw = true;
-                play_ui_beep(880.0f, 15);
+                if (in.joy_y > 50) {
+                    if (active_row == 0 && (2 + active_col) < page_apps) {
+                        active_row = 1;
+                        joy_latched = true;
+                        needs_redraw = true;
+                        play_ui_beep(880.0f, 15);
+                    }
+                } else if (in.joy_y < -50) {
+                    if (active_row == 1) {
+                        active_row = 0;
+                        joy_latched = true;
+                        needs_redraw = true;
+                        play_ui_beep(880.0f, 15);
+                    }
+                }
             }
-        } else {
-            /* Release latch when stick returns to center deadzone */
-            if (abs(in.joy_x) < 25 && abs(in.joy_y) < 25) {
-                joy_edge_latched = false;
-            }
+        } else if (abs(in.joy_x) < 25 && abs(in.joy_y) < 25) {
+            joy_latched = false;
         }
 
-        int active_idx = active_row * 2 + active_col;
-        const launcher_app_t *cur_app = &s_launcher_apps[active_idx];
+        int active_idx = page_start + (active_row * 2 + active_col);
+        atlas_app_t active_app;
+        bool has_active_app = (app_manager_get_at(active_idx, &active_app) == ESP_OK);
 
-        /* 2. Button Event Processing */
-        /* Button A (SW1): Select / Launch */
+        /* ── Button A: Launch Application ───────────────────────────────── */
         if (in.btn_a && !last_btn_a) {
-            play_ui_beep(1200.0f, 40);
-            const char *target_id = (active_idx < (int)reg_count) ? reg_apps[active_idx].app_id : cur_app->id;
-            const char *target_title = (active_idx < (int)reg_count) ? reg_apps[active_idx].app_name : cur_app->title;
+            if (has_active_app) {
+                if (active_app.is_launchable) {
+                    play_ui_beep(1200.0f, 40);
+                    esp_err_t launch_err = app_manager_launch(active_app.app_id);
+                    needs_redraw = true;
 
-            atlas_app_entry_t entry;
-            if (app_registry_get(target_id, &entry) == ESP_OK && (entry.is_staged || strlen(entry.bin_path) > 0)) {
-                snprintf(toast_msg, sizeof(toast_msg), "BOOTING: %s", target_title);
-                s_home_fb = fb;
-                app_registry_stage_and_launch(target_id, home_staging_progress_cb);
+                    if (launch_err == ESP_OK) {
+                        snprintf(toast_msg, sizeof(toast_msg), "RETURNED: %s", active_app.name);
+                        toast_timer = 35;
+                    } else {
+                        snprintf(toast_msg, sizeof(toast_msg), "ERROR: %s", esp_err_to_name(launch_err));
+                        toast_timer = 50;
+                    }
+                } else {
+                    /* Honest notification of unsupported runtime */
+                    play_ui_beep(300.0f, 50);
+                    snprintf(toast_msg, sizeof(toast_msg), "UNSUPPORTED: Runtime '%s' unavailable",
+                             active_app.runtime_str);
+                    toast_timer = 50;
+                    needs_redraw = true;
+                    ESP_LOGW(TAG, "Cannot launch '%s': runtime '%s' is not supported.",
+                             active_app.app_id, active_app.runtime_str);
+                }
             } else {
-                snprintf(toast_msg, sizeof(toast_msg), "LAUNCHING: %s", target_title);
-                toast_timer = 45; /* 1.5 seconds */
+                play_ui_beep(300.0f, 30);
+                snprintf(toast_msg, sizeof(toast_msg), "NO APP SELECTED");
+                toast_timer = 30;
                 needs_redraw = true;
-                ESP_LOGI(TAG, "Event: Launch target -> %s (%s)", target_title, target_id);
             }
         }
 
-        /* Button B (SW2): Back / Reset Focus */
+        /* ── Button B: Focus Reset / First Page ─────────────────────────── */
         if (in.btn_b && !last_btn_b) {
-            if (active_row != 0 || active_col != 0) {
-                active_row = 0;
-                active_col = 0;
-            }
-            snprintf(toast_msg, sizeof(toast_msg), "FOCUS RESET -> %s", s_launcher_apps[0].title);
-            toast_timer = 35;
+            current_page = 0;
+            active_row   = 0;
+            active_col   = 0;
+            snprintf(toast_msg, sizeof(toast_msg), "PAGE 1");
+            toast_timer = 25;
             needs_redraw = true;
             play_ui_beep(587.33f, 25);
-            ESP_LOGI(TAG, "Event: Grid focus reset to origin (Cell 0).");
         }
 
-        /* Button C (SW3): Context Action 1 */
+        /* ── Button C: Prev Page or Rescan ──────────────────────────────── */
         if (in.btn_c && !last_btn_c) {
-            snprintf(toast_msg, sizeof(toast_msg), "ACTION: %s", cur_app->action_c_label);
-            toast_timer = 40;
+            play_ui_beep(783.99f, 25);
+            if (total_pages > 1) {
+                if (current_page > 0) current_page--;
+                else current_page = total_pages - 1;
+                snprintf(toast_msg, sizeof(toast_msg), "PAGE %d / %d", current_page + 1, total_pages);
+            } else {
+                app_manager_scan_installed();
+                snprintf(toast_msg, sizeof(toast_msg), "RESCANNED SD STORAGE");
+            }
+            toast_timer = 35;
             needs_redraw = true;
-            play_ui_beep(783.99f, 30);
-            ESP_LOGI(TAG, "Event: Context Action 1 -> [%s] on %s", cur_app->action_c_label, cur_app->id);
         }
 
-        /* Button D (SW4): Context Action 2 */
+        /* ── Button D: Next Page or Rescan ──────────────────────────────── */
         if (in.btn_d && !last_btn_d) {
-            snprintf(toast_msg, sizeof(toast_msg), "ACTION: %s", cur_app->action_d_label);
-            toast_timer = 40;
+            play_ui_beep(987.77f, 25);
+            if (total_pages > 1) {
+                if (current_page < total_pages - 1) current_page++;
+                else current_page = 0;
+                snprintf(toast_msg, sizeof(toast_msg), "PAGE %d / %d", current_page + 1, total_pages);
+            } else {
+                app_manager_scan_installed();
+                snprintf(toast_msg, sizeof(toast_msg), "RESCANNED SD STORAGE");
+            }
+            toast_timer = 35;
             needs_redraw = true;
-            play_ui_beep(987.77f, 30);
-            ESP_LOGI(TAG, "Event: Context Action 2 -> [%s] on %s", cur_app->action_d_label, cur_app->id);
         }
 
         last_btn_a = in.btn_a;
@@ -251,67 +247,94 @@ void screen_home_run(void)
             needs_redraw = true;
         }
 
-        /* 3. Render Canvas Only When State Changed */
+        /* ── Render Dynamic UI (only on state change) ───────────────────── */
         if (needs_redraw) {
             needs_redraw = false;
 
-            /* Background */
             atlas_gfx_clear(fb, COLOR_BG_DARK);
 
-            /* Top Header */
+            /* Header */
             atlas_gfx_fill_rect(fb, 0, 0, ATLAS_LCD_WIDTH, 26, COLOR_PANEL_BG);
             atlas_gfx_draw_rect(fb, 0, 25, ATLAS_LCD_WIDTH, 1, COLOR_BORDER_NORM);
-            atlas_gfx_draw_string(fb, 12, 8, "ATLAS OS", COLOR_CYAN, 0x0001, 1);
-            atlas_gfx_draw_string(fb, 230, 8, "16MB S3", COLOR_TEXT_MUTED, 0x0001, 1);
 
-            /* 4. Render 2x2 Grid Cards */
-            for (int r = 0; r < 2; r++) {
-                for (int c = 0; c < 2; c++) {
-                    int idx = r * 2 + c;
-                    bool is_active = (r == active_row && c == active_col);
-                    const char *card_title = s_launcher_apps[idx].title;
-                    const char *card_tagline = s_launcher_apps[idx].tagline;
+            char title_bar[64];
+            if (total_pages > 1) {
+                snprintf(title_bar, sizeof(title_bar), "ATLAS OS (Page %d/%d)", current_page + 1, total_pages);
+            } else {
+                snprintf(title_bar, sizeof(title_bar), "ATLAS OS // LAUNCHER");
+            }
+            atlas_gfx_draw_string(fb, 12, 8, title_bar, COLOR_CYAN, 0x0001, 1);
 
-                    if (idx < (int)reg_count && strlen(reg_apps[idx].app_name) > 0) {
-                        card_title = reg_apps[idx].app_name;
-                        if (reg_apps[idx].is_staged) {
-                            card_tagline = "[STAGED - READY]";
-                        } else if (strlen(reg_apps[idx].bin_path) > 0) {
-                            card_tagline = "[SD CARD BINARY]";
+            /* SD Card Status Pill in Header */
+            bool sd_ok = atlas_sdcard_is_mounted();
+            if (sd_ok) {
+                atlas_gfx_draw_string(fb, 230, 8, "[SD:OK]", COLOR_GREEN, 0x0001, 1);
+            } else {
+                atlas_gfx_draw_string(fb, 230, 8, "[NO SD]", COLOR_YELLOW, 0x0001, 1);
+            }
+
+            /* ── Card Grid or Empty State ───────────────────────────────── */
+            if (total_apps == 0) {
+                /* Empty catalogue state */
+                atlas_gfx_fill_rect(fb, 20, 60, 280, 100, COLOR_PANEL_BG);
+                atlas_gfx_draw_rect(fb, 20, 60, 280, 100, COLOR_BORDER_NORM);
+                atlas_gfx_draw_string_centered(fb, 85,  "NO APPLICATIONS INSTALLED", COLOR_YELLOW, 0x0001, 1);
+                atlas_gfx_draw_string_centered(fb, 105, "Install apps to /sdcard/apps/installed/", COLOR_TEXT_MUTED, 0x0001, 1);
+                atlas_gfx_draw_string_centered(fb, 125, "[C] Rescan Storage", COLOR_CYAN, 0x0001, 1);
+            } else {
+                for (int r = 0; r < 2; r++) {
+                    for (int c = 0; c < 2; c++) {
+                        int slot = r * 2 + c;
+                        int app_i = page_start + slot;
+                        if (app_i >= (int)total_apps) continue;
+
+                        atlas_app_t app;
+                        if (app_manager_get_at(app_i, &app) != ESP_OK) continue;
+
+                        bool is_active = (r == active_row && c == active_col);
+
+                        char card_tagline[48];
+                        if (app.is_launchable) {
+                            snprintf(card_tagline, sizeof(card_tagline), "%s", app.tagline);
                         } else {
-                            card_tagline = reg_apps[idx].tagline;
+                            snprintf(card_tagline, sizeof(card_tagline), "[%s: unexecutable]", app.runtime_str);
                         }
-                    }
 
-                    atlas_gfx_draw_card(fb, COL_X[c], ROW_Y[r], CARD_W, CARD_H,
-                                        card_title,
-                                        card_tagline,
-                                        is_active);
+                        atlas_gfx_draw_card(fb, COL_X[c], ROW_Y[r], CARD_W, CARD_H,
+                                            app.name, card_tagline, is_active);
+
+                        /* Icon or category indicator badge */
+                        uint16_t badge_col = (app.type == ATLAS_APP_TYPE_BUILTIN) ? COLOR_CYAN : COLOR_PURPLE;
+                        atlas_gfx_fill_rect(fb, COL_X[c] + CARD_W - 14, ROW_Y[r] + 8, 6, 6, badge_col);
+                    }
                 }
             }
 
-            /* 5. Dynamic Footer Legend */
+            /* ── Footer ─────────────────────────────────────────────────── */
             atlas_gfx_fill_rect(fb, 0, 202, ATLAS_LCD_WIDTH, 38, COLOR_PANEL_BG);
             atlas_gfx_draw_rect(fb, 0, 202, ATLAS_LCD_WIDTH, 1, COLOR_BORDER_NORM);
 
             if (toast_timer > 0) {
-                atlas_gfx_draw_string_centered(fb, 214, toast_msg, COLOR_GREEN, 0x0001, 1);
+                uint16_t toast_color = COLOR_GREEN;
+                if (strncmp(toast_msg, "UNSUPPORTED", 11) == 0 ||
+                    strncmp(toast_msg, "ERROR",        5) == 0 ||
+                    strncmp(toast_msg, "NO APP",       6) == 0) {
+                    toast_color = COLOR_YELLOW;
+                }
+                atlas_gfx_draw_string_centered(fb, 214, toast_msg, toast_color, 0x0001, 1);
             } else {
-                char action_line[64];
-                snprintf(action_line, sizeof(action_line), "[C] %-14s [D] %s",
-                         cur_app->action_c_label, cur_app->action_d_label);
-                atlas_gfx_draw_string(fb, 12, 210, action_line, COLOR_CYAN, 0x0001, 1);
-
-                atlas_gfx_draw_string(fb, 12, 224, "[A] Launch    [B] Focus Reset", COLOR_TEXT_MUTED, 0x0001, 1);
+                if (total_pages > 1) {
+                    atlas_gfx_draw_string(fb, 12, 210, "[C] Prev Page       [D] Next Page", COLOR_CYAN, 0x0001, 1);
+                } else {
+                    atlas_gfx_draw_string(fb, 12, 210, "[C/D] Rescan SD Storage", COLOR_CYAN, 0x0001, 1);
+                }
+                atlas_gfx_draw_string(fb, 12, 224, "[A] Launch App      [B] Reset Focus", COLOR_TEXT_MUTED, 0x0001, 1);
             }
 
-            /* 6. Push Full Framebuffer via Non-Blocking DMA */
             atlas_display_flush(0, 0, ATLAS_LCD_WIDTH - 1, ATLAS_LCD_HEIGHT - 1, fb);
             atlas_display_wait_flush();
         }
 
-        vTaskDelay(pdMS_TO_TICKS(20)); /* Fast 50 Hz poll cadence */
+        vTaskDelay(pdMS_TO_TICKS(20)); /* 50 Hz poll */
     }
-
-    free(fb);
 }

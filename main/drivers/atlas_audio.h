@@ -33,6 +33,20 @@ esp_err_t atlas_audio_init(uint32_t sample_rate);
 void atlas_audio_set_volume(uint8_t sw_volume_percent);
 
 /**
+ * @brief Get current master playback volume percentage (0..100).
+ */
+uint8_t atlas_audio_get_volume(void);
+
+/**
+ * @brief Play a non-blocking UI feedback tone via Core 0 background worker.
+ * Fire-and-forget: does not stall caller or UI frame timing.
+ *
+ * @param freq        Frequency in Hz (e.g. 880.0f).
+ * @param duration_ms Duration in milliseconds (e.g. 20).
+ */
+void atlas_audio_play_beep(float freq, int duration_ms);
+
+/**
  * @brief Write 16-bit PCM samples to the I2S speaker DMA ring buffer.
  * Performs real-time fixed-point integer volume scaling and hardware saturation protection.
  *

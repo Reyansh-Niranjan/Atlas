@@ -52,6 +52,17 @@ void atlas_display_flush(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, con
  */
 void atlas_display_wait_flush(void);
 
+/**
+ * @brief Get the canonical managed 320x240 RGB565 framebuffer in PSRAM.
+ *
+ * Allocated once during atlas_display_init() in 8MB Octal PSRAM.
+ * Shared by all OS screens (boot splash, home launcher, settings, recovery)
+ * to eliminate heap churn and duplicate 153.6 KB allocations.
+ *
+ * @return Pointer to 16-bit RGB565 framebuffer (320x240 pixels), or NULL if unallocated.
+ */
+uint16_t *atlas_display_get_framebuffer(void);
+
 #ifdef __cplusplus
 }
 #endif

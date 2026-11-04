@@ -218,8 +218,8 @@ esp_err_t atlas_input_init(void)
     /* 3. Setup Hardware ADC Calibration */
     init_adc_calibration();
 
-    /* 4. Spawn Dedicated FreeRTOS Input Task (Priority 10) */
-    BaseType_t ret = xTaskCreate(atlas_input_task, "atlas_input", 3072, NULL, 10, NULL);
+    /* 4. Spawn Dedicated FreeRTOS Input Task (Priority 10, Pinned to Core 0) */
+    BaseType_t ret = xTaskCreatePinnedToCore(atlas_input_task, "atlas_input", 3072, NULL, 10, NULL, 0);
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create input polling task!");
         return ESP_FAIL;

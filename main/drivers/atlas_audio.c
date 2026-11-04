@@ -12,6 +12,7 @@
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 
 static const char *TAG = "atlas_audio";
 
@@ -29,6 +30,7 @@ static const char *TAG = "atlas_audio";
 static i2s_chan_handle_t s_tx_chan = NULL;
 static i2s_chan_handle_t s_rx_chan = NULL;
 static atomic_int        s_volume_scale_q15 = 16384; /* Default: 100% UI -> 50% HW */
+static atomic_int        s_sw_volume_percent = 100;
 static atomic_bool       s_audio_muted = false;
 
 /* High-Pass Filter State for INMP441 DC-Offset Rejection */
@@ -123,6 +125,11 @@ esp_err_t atlas_audio_init(uint32_t sample_rate)
 
 void atlas_audio_set_volume(uint8_t sw_volume_percent)
 {
+    if (sw_volume_percent > 100) {
+        sw_volume_percent = 100;
+    }
+    atomic_store_explicit(&s_sw_volume_percent, (int)sw_volume_percent, memory_order_relaxed);
+
     if (sw_volume_percent == 0) {
         atomic_store_explicit(&s_volume_scale_q15, 0, memory_order_relaxed);
         atomic_store_explicit(&s_audio_muted, true, memory_order_relaxed);
@@ -130,15 +137,83 @@ void atlas_audio_set_volume(uint8_t sw_volume_percent)
         return;
     }
 
-    if (sw_volume_percent > 100) {
-        sw_volume_percent = 100;
-    }
-
     /* Fixed-point scale: 100% SW volume maps strictly to 50% physical ceiling (16384 in Q15) */
     int scale_q15 = ((int)sw_volume_percent * HW_VOLUME_MAX_Q15) / 100;
     atomic_store_explicit(&s_volume_scale_q15, scale_q15, memory_order_relaxed);
     atomic_store_explicit(&s_audio_muted, false, memory_order_relaxed);
     spk_set_sd_mode(true);
+}
+
+uint8_t atlas_audio_get_volume(void)
+{
+    int vol = atomic_load_explicit(&s_sw_volume_percent, memory_order_relaxed);
+    if (vol < 0) return 0;
+    if (vol > 100) return 100;
+    return (uint8_t)vol;
+}
+
+/* ── Asynchronous Non-blocking Beep Worker (Pinned to Core 0) ────────────── */
+typedef struct {
+    float freq;
+    int   duration_ms;
+} atlas_beep_req_t;
+
+static QueueHandle_t s_beep_queue = NULL;
+
+static void audio_beep_task(void *pv)
+{
+    (void)pv;
+    atlas_beep_req_t req;
+    while (true) {
+        if (xQueueReceive(s_beep_queue, &req, portMAX_DELAY) == pdTRUE) {
+            if (atomic_load_explicit(&s_audio_muted, memory_order_relaxed)) {
+                continue;
+            }
+            int num_samples = (44100 * req.duration_ms) / 1000;
+            if (num_samples <= 0) {
+                continue;
+            }
+            int16_t beep_buf[128 * 2];
+            int period_samples = (int)(44100.0f / req.freq);
+            if (period_samples < 2) period_samples = 2;
+            int half_period = period_samples / 2;
+            int cur_sample = 0;
+
+            size_t samples_left = (size_t)num_samples;
+            while (samples_left > 0) {
+                size_t chunk = samples_left;
+                if (chunk > 128) {
+                    chunk = 128;
+                }
+                for (size_t i = 0; i < chunk; i++) {
+                    int16_t val = (cur_sample < half_period) ? 6000 : -6000;
+                    cur_sample = (cur_sample + 1) % period_samples;
+                    beep_buf[i * 2]     = val;
+                    beep_buf[i * 2 + 1] = val;
+                }
+                size_t written = 0;
+                atlas_audio_write(beep_buf, chunk * 2, &written, pdMS_TO_TICKS(10));
+                samples_left -= chunk;
+            }
+        }
+    }
+}
+
+void atlas_audio_play_beep(float freq, int duration_ms)
+{
+    if (atomic_load_explicit(&s_audio_muted, memory_order_relaxed)) {
+        return;
+    }
+    if (!s_beep_queue) {
+        s_beep_queue = xQueueCreate(4, sizeof(atlas_beep_req_t));
+        if (s_beep_queue) {
+            xTaskCreatePinnedToCore(audio_beep_task, "atlas_beep", 2048, NULL, 3, NULL, 0);
+        }
+    }
+    if (s_beep_queue) {
+        atlas_beep_req_t req = { .freq = freq, .duration_ms = duration_ms };
+        xQueueSend(s_beep_queue, &req, 0);
+    }
 }
 
 esp_err_t atlas_audio_write(const int16_t *pcm_data, size_t num_samples, size_t *bytes_written, TickType_t timeout)
@@ -158,7 +233,10 @@ esp_err_t atlas_audio_write(const int16_t *pcm_data, size_t num_samples, size_t 
     const int16_t *src_ptr = pcm_data;
 
     while (samples_left > 0) {
-        size_t to_process = samples_left > AUDIO_CHUNK_SAMPLES ? AUDIO_CHUNK_SAMPLES : samples_left;
+        size_t to_process = samples_left;
+        if (to_process > AUDIO_CHUNK_SAMPLES) {
+            to_process = AUDIO_CHUNK_SAMPLES;
+        }
 
         if (muted || scale_q15 == 0) {
             memset(chunk_buf, 0, to_process * sizeof(int16_t));
