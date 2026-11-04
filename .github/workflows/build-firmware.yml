@@ -4,19 +4,21 @@ on:
   push:
     branches: [ main ]
     paths:
-      - src/**
-      - include/**
-      - lib/**
+      - main/**
+      - components/**
       - scripts/**
       - platformio.ini
+      - partitions.csv
+      - requirements.txt
       - .github/workflows/build-firmware.yml
   pull_request:
     paths:
-      - src/**
-      - include/**
-      - lib/**
+      - main/**
+      - components/**
       - scripts/**
       - platformio.ini
+      - partitions.csv
+      - requirements.txt
       - .github/workflows/build-firmware.yml
 permissions:
   contents: write
@@ -25,11 +27,13 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      PIO_ENV: 4d_systems_esp32s3_gen4_r8n16
+      PIO_ENV: atlas
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -39,35 +43,12 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
-      - name: Inject GROQ_API_KEY (CI)
-        shell: bash
-        env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      - name: Run Manifest Validation Tests
         run: |
-          python - <<'PY'
-          import os
-          import re
+          python scripts/test_manifest_validation.py
+          python APPS/tools/validate_apps.py
 
-          key = os.environ.get("GROQ_API_KEY", "")
-          def q(v: str) -> str:
-            return v.replace("\\", "\\\\").replace('"', '\\"')
-
-          path = "include/secrets.h"
-          with open(path, "r", encoding="utf-8") as f:
-            content = f.read()
-
-          pattern = r'^#define\s+GROQ_API_KEY\s+".*"\s*$'
-          replacement = f'#define GROQ_API_KEY "{q(key)}"'
-          if re.search(pattern, content, flags=re.MULTILINE):
-            content = re.sub(pattern, replacement, content, flags=re.MULTILINE)
-          else:
-            content = content.rstrip() + "\n" + replacement + "\n"
-
-          with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
-          PY
-
-      - name: Install dependencies
+      - name: Install PlatformIO dependencies
         run: pio pkg install -e $PIO_ENV
 
       - name: Generate auto tag
