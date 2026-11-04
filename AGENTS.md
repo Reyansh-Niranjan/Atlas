@@ -26,7 +26,13 @@ During planning and architectural evaluation, you **MUST** explicitly load and a
 5. [`ponytail`](file:///D:/Atlas/.agents/skills/ponytail/SKILL.md): Senior developer laziness — YAGNI, standard library and ESP-IDF native features first, refusing speculative complexity.
 6. [`ponytail-audit`](file:///D:/Atlas/.agents/skills/ponytail-audit/SKILL.md): Pre-planning audit to prevent bloat, redundant implementations, and dead abstractions.
 7. [`slopmonster`](file:///D:/Atlas/.agents/skills/slopmonster/SKILL.md): Concrete planning prose free from AI fluff, marketing jargon, and hand-waving.
-8. [`context7`](file:///D:/Atlas/.agents/skills/context7/SKILL.md): Authoritative documentation and API lookup via `ctx7 library` and `ctx7 docs`. Research architectural feasibility, verify ESP-IDF and FreeRTOS documentation, check current API capabilities, and compare library versions. Strictly research-only during planning.
+8. [`context7`](file:///D:/Atlas/.agents/skills/context7/SKILL.md): Authoritative documentation and API lookup via `ctx7 library` and `ctx7 docs`:
+   - Researching architectural decisions.
+   - Checking current API capabilities.
+   - Verifying ESP-IDF and FreeRTOS documentation.
+   - Comparing library versions and compatibility.
+   - Researching unfamiliar technologies before recommending them.
+   - *Strictly research-only during planning.*
 
 **Explicit Exclusions:**
 - **`diagnosing-bugs`**: DO NOT ACTIVATE during planning. Bug diagnosis belongs exclusively to `/debug`.
@@ -86,8 +92,20 @@ Every plan, architectural proposal, and code modification must strictly respect 
 The ATLAS project provides exactly three orchestrated engineering workflows:
 
 1. **Native `/plan`** (Plan Mode): Analytical architectural evaluation and implementation planning. Regulated by Section 1 above. Activates the 8 analytical skills (`codebase-design`, `domain-modeling`, `improve-codebase-architecture`, `karpathy-guidelines`, `ponytail`, `ponytail-audit`, `slopmonster`, `context7`). Strictly planning-only.
+   - *Context7 Role:* Researching architectural decisions, checking current API capabilities, verifying ESP-IDF/FreeRTOS documentation, comparing library versions, and researching unfamiliar technologies. Strictly research-only.
 2. **`/code`** (`.agents/skills/code/SKILL.md`): General implementation and feature development. Activates the 8 coding and analysis skills (`codebase-design`, `domain-modeling`, `improve-codebase-architecture`, `karpathy-guidelines`, `ponytail`, `ponytail-audit`, `slopmonster`, `context7`). Governed by project instructions and applicable ECC rules.
+   - *Context7 Role:* Looking up unfamiliar APIs before implementation, checking version-specific usage (ESP-IDF v6.0.1), verifying configuration options, avoiding outdated/hallucinated APIs, and checking migration/compatibility requirements.
 3. **`/debug`** (`.agents/skills/debug/SKILL.md`): Defect investigation, crash diagnosis, and bug fixing. Activates 9 skills (`diagnosing-bugs` + the 8 coding/analysis skills). Reproduces defects before code modification, isolates root causes, and verifies fixes with builds and tests.
+   - *Context7 Role:* Investigating API behavior, checking version-specific changes and known limitations, verifying expected framework behavior, and researching documented error conditions. Auxiliary only; never replaces the diagnostic loop.
+
+### Context7 Mandatory Usage Policy
+All three orchestrators must adhere to this five-step documentation policy:
+1. **Identify the actual dependency and version** used by ATLAS (ESP-IDF v6.0.1, FreeRTOS 1000Hz tick rate, PlatformIO).
+2. **Resolve the appropriate Context7 library documentation** via `npx ctx7@latest library <name> "<query>"`.
+3. **Query the relevant API or technical behavior** via `npx ctx7@latest docs <libraryId> "<query>"`.
+4. **Prefer documentation matching the project's actual version** (e.g. `/websites/espressif_projects_esp-idf_en_release-v6_0`).
+5. **Cross-check documentation against ATLAS source code, pinouts (`atlas_pins.h`), and configuration.**
+*Boundary:* Do not blindly trust documentation over verified repository behavior. Context7 is a documentation research tool, not permission to introduce new dependencies or modify architecture without approval.
 
 ### Preserved Skill Inventory
 The project maintains exactly nine installed specialist skills plus Context7:

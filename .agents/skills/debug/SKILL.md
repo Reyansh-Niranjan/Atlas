@@ -23,7 +23,12 @@ You **MUST** explicitly load and apply the following nine specialist skills:
 6. [`ponytail`](file:///D:/Atlas/.agents/skills/ponytail/SKILL.md): Root cause over symptom; smallest change that resolves the defect; no new abstractions for a bug fix.
 7. [`ponytail-audit`](file:///D:/Atlas/.agents/skills/ponytail-audit/SKILL.md): Verification that fixes do not introduce dead code, bloat, or complexity creep.
 8. [`slopmonster`](file:///D:/Atlas/.agents/skills/slopmonster/SKILL.md): Clean documentation of the defect and fix without AI boilerplate.
-9. [`context7`](file:///D:/Atlas/.agents/skills/context7/SKILL.md): Authoritative documentation and error lookup via `ctx7 library` and `ctx7 docs`. Use only when root-cause diagnosis points to API contract misuse, undocumented framework quirks, or version discrepancies. Auxiliary only — never replaces the diagnostic loop.
+9. [`context7`](file:///D:/Atlas/.agents/skills/context7/SKILL.md): Authoritative documentation and error lookup via `ctx7 library` and `ctx7 docs`:
+   - Investigating API behavior.
+   - Checking version-specific changes and known limitations.
+   - Verifying expected framework behavior.
+   - Researching documented error conditions and configuration requirements.
+   - *Constraint:* Auxiliary only — never replaces the diagnostic loop. Only query Context7 after reproducing the defect and isolating the failure point to an external API interaction.
 
 ### Explicitly Excluded Skills
 - **`setup-matt-pocock-skills`**: DO NOT ACTIVATE.
@@ -64,10 +69,13 @@ Embedded debugging on the ESP32-S3 requires hardware-truthful analysis:
 5. **Inspect Diagnostics & Source:** Examine serial logs, task states, register dumps, and the specific code path leading to the fault.
 6. **Trace Execution Path:** Follow the call stack across subsystem seams and FreeRTOS task boundaries.
 7. **Identify Root Cause:** Determine why the invariant was violated (e.g. uninitialized pointer, memory leak, race condition, pin collision, buffer overflow).
-8. **Research API Behavior & Error Codes (Context7 Auxiliary Lookup):** If the root cause points to API contract misuse, undocumented framework quirks, or version discrepancies:
-   - Query `npx ctx7@latest library <name>` then `npx ctx7@latest docs <id> "<query>"` for documented error conditions, expected argument structures, and known limitations.
-   - Cross-check findings against the ATLAS codebase, ESP32-S3 hardware constraints, and ESP-IDF v6.0.1.
-   - Context7 is auxiliary only and must NEVER replace the systematic reproduction and diagnostic loop.
+8. **Context7 Usage Policy & API Lookup (Auxiliary Only):** If the root cause points to API contract misuse, undocumented framework quirks, or version discrepancies:
+   1. *Identify Dependency & Version:* Check the exact ESP-IDF v6.0.1 component or FreeRTOS API involved in the failure.
+   2. *Resolve Context7 Library:* Run `npx ctx7@latest library <name> "<query>"` to locate the authoritative docs.
+   3. *Query Error Specifications:* Run `npx ctx7@latest docs <libraryId> "<function/error>"` to review documented return codes (`esp_err_t`), precondition asserts, and parameter validation.
+   4. *Prefer Exact Project Version:* Compare behavior against ESP-IDF v6.0 release documentation.
+   5. *Cross-Check Against Codebase:* Re-verify against actual hardware state, task priorities, and register backtraces.
+   - *Strict Boundary:* Context7 is auxiliary only and must NEVER replace the systematic reproduction and diagnostic loop.
 9. **Distinguish Facts from Hypotheses:** Explicitly state what is proven by evidence versus what remains an unverified hypothesis.
 10. **Determine Smallest Justified Fix:**
     - Apply the **Ponytail rule**: Fix the root cause with the smallest surgical change.

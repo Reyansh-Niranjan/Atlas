@@ -56,14 +56,43 @@ Common Context7 library IDs for the ATLAS platform:
 ## 3. Orchestrator Usage Guidelines
 
 ### In Native `/plan`
-- **Purpose:** Architectural feasibility research, checking current API capabilities, verifying hardware driver support, and checking library compatibility.
+- **Purpose:**
+  - Researching architectural decisions.
+  - Checking current API capabilities.
+  - Verifying ESP-IDF and FreeRTOS documentation.
+  - Comparing library versions and compatibility.
+  - Researching unfamiliar technologies before recommending them.
 - **Boundary:** Strictly research-only. Plans must ground designs in existing ATLAS patterns before proposing new APIs.
 
 ### In `/code`
-- **Purpose:** Verifying exact function signatures, argument types, initialization structures, and configuration flags before writing code.
-- **Boundary:** Prevents hallucinated or deprecated APIs from previous ESP-IDF versions (e.g. legacy I2S driver vs modern `esp_driver_i2s`).
+- **Purpose:**
+  - Looking up unfamiliar APIs before implementation.
+  - Checking version-specific usage (ESP-IDF v6.0.1, FreeRTOS 1000Hz).
+  - Verifying configuration options.
+  - Avoiding outdated or hallucinated API usage.
+  - Checking migration and compatibility requirements.
+- **Boundary:** Prevents hallucinated or deprecated APIs. Never introduces unrequested external dependencies.
 
 ### In `/debug`
-- **Purpose:** Auxiliary lookup when root-cause diagnosis indicates possible API contract violations, unexpected error return codes, or undocumented framework edge cases.
-- **Boundary:** Must NOT replace the systematic diagnostic loop in `/debug`. Only query Context7 after reproducing the issue and isolating the failure point to an external API interaction.
+- **Purpose:**
+  - Investigating API behavior.
+  - Checking version-specific changes and known limitations.
+  - Verifying expected framework behavior.
+  - Researching documented error conditions and configuration requirements.
+- **Boundary:** Auxiliary lookup only — must NEVER replace the systematic reproduction and diagnostic loop.
+
+---
+
+## 4. Mandatory Context7 Usage Policy
+
+All three orchestrators must follow this mandatory five-step policy:
+
+1. **Identify the actual dependency and version** used by ATLAS (ESP-IDF v6.0.1, FreeRTOS 1000Hz tick rate, PlatformIO).
+2. **Resolve the appropriate Context7 library documentation** via `npx ctx7@latest library <name> "<query>"`.
+3. **Query the relevant API or technical behavior** via `npx ctx7@latest docs <libraryId> "<query>"`.
+4. **Prefer documentation matching the project's actual version** (e.g. `/websites/espressif_projects_esp-idf_en_release-v6_0`).
+5. **Cross-check documentation against ATLAS source code and configuration** (`main/include/atlas_pins.h`, schematics).
+
+> [!CAUTION]
+> Do not blindly trust documentation over verified repository behavior. Context7 is a documentation research tool, not permission to introduce new dependencies or change architecture.
 
