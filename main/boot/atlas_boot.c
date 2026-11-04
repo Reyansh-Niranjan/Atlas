@@ -73,15 +73,10 @@ static esp_err_t boot_stage_hardware(uint16_t **out_fb)
         return disp_ret;
     }
 
-    /* Allocate boot framebuffer */
-    uint16_t *fb = (uint16_t *)heap_caps_aligned_alloc(
-        64, ATLAS_LCD_BYTES, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    /* Obtain canonical managed framebuffer in Octal PSRAM */
+    uint16_t *fb = atlas_display_get_framebuffer();
     if (!fb) {
-        fb = (uint16_t *)heap_caps_aligned_alloc(
-            64, ATLAS_LCD_BYTES, MALLOC_CAP_SPIRAM);
-    }
-    if (!fb) {
-        ATLAS_LOG_ERROR(ATLAS_LOG_TAG_BOOT, "Boot framebuffer allocation failed — OOM.");
+        ATLAS_LOG_ERROR(ATLAS_LOG_TAG_BOOT, "Managed framebuffer allocation failed — OOM.");
         return ESP_ERR_NO_MEM;
     }
 
@@ -231,6 +226,7 @@ static void boot_stage_diagnostics(void)
 /* ── Stage 7: Recovery Trigger Check ─────────────────────────────────────── */
 static bool boot_stage_recovery_check(uint16_t *boot_fb)
 {
+    (void)boot_fb;
     ATLAS_LOG_INFO(ATLAS_LOG_TAG_BOOT, "[STAGE 6/7] Checking Recovery Trigger (hold Button B / SW2)...");
     atlas_input_state_t final_in = atlas_input_get_state();
     if (final_in.btn_b) {
@@ -238,7 +234,6 @@ static bool boot_stage_recovery_check(uint16_t *boot_fb)
         ATLAS_LOG_WARN(ATLAS_LOG_TAG_BOOT, " [ALERT] Button B held — entering Recovery Safe Mode.   ");
         ATLAS_LOG_WARN(ATLAS_LOG_TAG_BOOT, "=========================================================");
         s_diag_snapshot.recovery_triggered = true;
-        if (boot_fb) free(boot_fb);
 
         boot_advance_stage(ATLAS_BOOT_STAGE_RECOVERY, "recovery", ESP_OK);
         screen_recovery_run(); /* returns if user selects "Continue" */
@@ -312,11 +307,7 @@ esp_err_t atlas_boot_run(atlas_system_diag_t *out_diag)
     boot_stage_diagnostics();
 
     /* 7. Recovery Check */
-    bool recovery_ran = boot_stage_recovery_check(boot_fb);
-    if (!recovery_ran && boot_fb) {
-        free(boot_fb);
-        boot_fb = NULL;
-    }
+    boot_stage_recovery_check(boot_fb);
 
     /* 8. System Services */
     ret = boot_stage_services();
@@ -338,9 +329,19 @@ atlas_boot_stage_t atlas_boot_get_stage(void)
     return s_current_stage;
 }
 
+static void atlas_shell_task(void *pvParam)
+{
+    (void)pvParam;
+    screen_home_run();
+    vTaskDelete(NULL);
+}
+
 void atlas_boot_launch_shell(void)
 {
-    ATLAS_LOG_INFO(ATLAS_LOG_TAG_BOOT, "Handoff to ATLAS Shell (screen_home)...");
-    screen_home_run();
+    ATLAS_LOG_INFO(ATLAS_LOG_TAG_BOOT, "Handoff to ATLAS Shell pinned to Core 1...");
+    BaseType_t ret = xTaskCreatePinnedToCore(atlas_shell_task, "atlas_shell", 8192, NULL, 5, NULL, 1);
+    if (ret != pdPASS) {
+        ATLAS_LOG_ERROR(ATLAS_LOG_TAG_BOOT, "Failed to spawn atlas_shell task on Core 1!");
+    }
 }
 

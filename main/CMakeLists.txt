@@ -11,8 +11,6 @@ idf_component_register(
         "drivers/atlas_input.c"
         "drivers/atlas_audio.c"
         "drivers/atlas_sdcard.c"
-        "system/atlas_init.c"
-        "system/app_registry.c"
         "system/app_manager.c"
         "system/atlas_ota.c"
         "ui/atlas_gfx.c"

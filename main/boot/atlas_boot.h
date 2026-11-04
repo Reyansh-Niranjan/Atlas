@@ -11,11 +11,31 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "esp_err.h"
-#include "atlas_init.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/**
+ * @brief Per-component boot diagnostic snapshot.
+ *
+ * Populated during boot diagnostics regardless of success or failure
+ * so callers and the recovery screen can display truthful telemetry.
+ */
+typedef struct {
+    bool     psram_ok;            /**< PSRAM detected and >= 8 MB (OPTIONAL) */
+    size_t   psram_size;          /**< Detected PSRAM size in bytes */
+    bool     display_ok;          /**< ILI9341 init succeeded (ESSENTIAL) */
+    bool     input_ok;            /**< ADC + buttons init succeeded (ESSENTIAL) */
+    bool     audio_ok;            /**< I2S TX/RX init succeeded (OPTIONAL) */
+    bool     sdcard_ok;           /**< SD card mounted at /sdcard (OPTIONAL) */
+    uint64_t sdcard_size_bytes;   /**< SD capacity in bytes (0 if absent) */
+    bool     joystick_cal_ok;     /**< Joystick resting within ±15% of center */
+    int16_t  joy_center_x;        /**< Joystick X normalised value at rest */
+    int16_t  joy_center_y;        /**< Joystick Y normalised value at rest */
+    bool     mic_data_ok;         /**< INMP441 delivered >= 1 byte (OPTIONAL) */
+    bool     recovery_triggered;  /**< Button B was held at boot time */
+} atlas_system_diag_t;
 
 typedef enum {
     ATLAS_BOOT_STAGE_UNINITIALIZED = 0,

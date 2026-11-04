@@ -19,14 +19,10 @@ void screen_settings_run(void)
 {
     ATLAS_LOG_INFO(ATLAS_LOG_TAG_APP, "Launching Settings application...");
 
-    uint16_t *fb = (uint16_t *)heap_caps_aligned_alloc(
-        64, ATLAS_LCD_BYTES, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    /* Borrow canonical managed framebuffer in Octal PSRAM */
+    uint16_t *fb = atlas_display_get_framebuffer();
     if (!fb) {
-        fb = (uint16_t *)heap_caps_aligned_alloc(
-            64, ATLAS_LCD_BYTES, MALLOC_CAP_SPIRAM);
-    }
-    if (!fb) {
-        ATLAS_LOG_ERROR(ATLAS_LOG_TAG_APP, "Failed to allocate settings framebuffer.");
+        ATLAS_LOG_ERROR(ATLAS_LOG_TAG_APP, "Managed framebuffer unavailable.");
         return;
     }
 
@@ -120,7 +116,6 @@ void screen_settings_run(void)
         vTaskDelay(pdMS_TO_TICKS(40));
     }
 
-    free(fb);
     ATLAS_LOG_INFO(ATLAS_LOG_TAG_APP, "Settings application exited.");
 }
 

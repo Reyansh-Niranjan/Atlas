@@ -53,6 +53,7 @@ static spi_transaction_t   s_dma_trans[DMA_QUEUE_DEPTH];
 static uint8_t            *s_dma_buffer[DMA_QUEUE_DEPTH] = {NULL, NULL};
 static int                 s_dma_slot = 0;
 static int                 s_in_flight_count = 0;
+static uint16_t           *s_framebuffer = NULL;
 
 /* ── ISR Callback: Set DC line before transmission starts ────────────────── */
 static void IRAM_ATTR lcd_spi_pre_transfer_callback(spi_transaction_t *t)
@@ -169,14 +170,14 @@ static void lcd_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 {
     lcd_cmd_byte(CMD_CASET);
     {
-        uint8_t d[] = {(uint8_t)(x0 >> 8), (uint8_t)(x0 & 0xFF),
-                       (uint8_t)(x1 >> 8), (uint8_t)(x1 & 0xFF)};
+        const uint8_t d[] = {(uint8_t)(x0 >> 8), (uint8_t)(x0 & 0xFF),
+                             (uint8_t)(x1 >> 8), (uint8_t)(x1 & 0xFF)};
         lcd_data_bytes(d, 4);
     }
     lcd_cmd_byte(CMD_PASET);
     {
-        uint8_t d[] = {(uint8_t)(y0 >> 8), (uint8_t)(y0 & 0xFF),
-                       (uint8_t)(y1 >> 8), (uint8_t)(y1 & 0xFF)};
+        const uint8_t d[] = {(uint8_t)(y0 >> 8), (uint8_t)(y0 & 0xFF),
+                             (uint8_t)(y1 >> 8), (uint8_t)(y1 & 0xFF)};
         lcd_data_bytes(d, 4);
     }
     lcd_cmd_byte(CMD_RAMWR);
@@ -240,9 +241,26 @@ esp_err_t atlas_display_init(void)
     s_in_flight_count = 0;
     s_dma_slot = 0;
 
-    ESP_LOGI(TAG, "ILI9341 initialized: %dx%d @ 80MHz SPI DMA (ping-pong %u KB)",
-             ATLAS_LCD_WIDTH, ATLAS_LCD_HEIGHT, (unsigned int)(DMA_CHUNK_BYTES / 1024));
+    /* 6. Allocate canonical managed framebuffer in Octal PSRAM */
+    s_framebuffer = (uint16_t *)heap_caps_aligned_alloc(64, ATLAS_LCD_BYTES, MALLOC_CAP_SPIRAM);
+    if (!s_framebuffer) {
+        /* Fallback to internal RAM only if PSRAM is absent */
+        s_framebuffer = (uint16_t *)heap_caps_aligned_alloc(64, ATLAS_LCD_BYTES, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    }
+    if (!s_framebuffer) {
+        ESP_LOGE(TAG, "Failed to allocate canonical managed framebuffer!");
+        return ESP_ERR_NO_MEM;
+    }
+    memset(s_framebuffer, 0, ATLAS_LCD_BYTES);
+
+    ESP_LOGI(TAG, "ILI9341 initialized: %dx%d @ 80MHz SPI DMA (ping-pong %u KB, PSRAM FB: %p)",
+             ATLAS_LCD_WIDTH, ATLAS_LCD_HEIGHT, (unsigned int)(DMA_CHUNK_BYTES / 1024), s_framebuffer);
     return ESP_OK;
+}
+
+uint16_t *atlas_display_get_framebuffer(void)
+{
+    return s_framebuffer;
 }
 
 void atlas_display_set_brightness(uint8_t brightness)

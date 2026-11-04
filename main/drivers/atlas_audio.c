@@ -158,7 +158,10 @@ esp_err_t atlas_audio_write(const int16_t *pcm_data, size_t num_samples, size_t 
     const int16_t *src_ptr = pcm_data;
 
     while (samples_left > 0) {
-        size_t to_process = samples_left > AUDIO_CHUNK_SAMPLES ? AUDIO_CHUNK_SAMPLES : samples_left;
+        size_t to_process = samples_left;
+        if (to_process > AUDIO_CHUNK_SAMPLES) {
+            to_process = AUDIO_CHUNK_SAMPLES;
+        }
 
         if (muted || scale_q15 == 0) {
             memset(chunk_buf, 0, to_process * sizeof(int16_t));

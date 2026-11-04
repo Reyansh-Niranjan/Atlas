@@ -36,28 +36,60 @@ static void on_catalogue_changed(void *arg, esp_event_base_t base, int32_t id, v
     s_catalogue_dirty = true;
 }
 
-/* ── Audio Feedback ──────────────────────────────────────────────────────── */
+/* ── Asynchronous Non-Blocking Audio Feedback ────────────────────────────── */
+typedef struct {
+    float freq;
+    int duration_ms;
+} ui_beep_req_t;
+
+static QueueHandle_t s_beep_queue = NULL;
+
+static void audio_beep_task(void *arg)
+{
+    (void)arg;
+    ui_beep_req_t req;
+    while (true) {
+        if (xQueueReceive(s_beep_queue, &req, portMAX_DELAY) == pdTRUE) {
+            int num_samples = (44100 * req.duration_ms) / 1000;
+            int16_t beep_buf[128 * 2];
+            int period_samples = (int)(44100.0f / req.freq);
+            if (period_samples < 2) period_samples = 2;
+            int half_period = period_samples / 2;
+            int cur_sample = 0;
+
+            size_t samples_left = (size_t)num_samples;
+            while (samples_left > 0) {
+                size_t chunk = samples_left;
+                if (chunk > 128) {
+                    chunk = 128;
+                }
+                for (size_t i = 0; i < chunk; i++) {
+                    int16_t val = (cur_sample < half_period) ? 6000 : -6000;
+                    cur_sample = (cur_sample + 1) % period_samples;
+                    beep_buf[i * 2]     = val;
+                    beep_buf[i * 2 + 1] = val;
+                }
+                size_t written = 0;
+                atlas_audio_write(beep_buf, chunk * 2, &written, pdMS_TO_TICKS(10));
+                samples_left -= chunk;
+            }
+        }
+    }
+}
+
 static void play_ui_beep(float freq, int duration_ms)
 {
-    int num_samples = (44100 * duration_ms) / 1000;
-    int16_t beep_buf[128 * 2];
-    int period_samples = (int)(44100.0f / freq);
-    if (period_samples < 2) period_samples = 2;
-    int half_period = period_samples / 2;
-    int cur_sample = 0;
-
-    size_t samples_left = (size_t)num_samples;
-    while (samples_left > 0) {
-        size_t chunk = samples_left > 128 ? 128 : samples_left;
-        for (size_t i = 0; i < chunk; i++) {
-            int16_t val = (cur_sample < half_period) ? 6000 : -6000;
-            cur_sample = (cur_sample + 1) % period_samples;
-            beep_buf[i * 2]     = val;
-            beep_buf[i * 2 + 1] = val;
+    if (!s_beep_queue) {
+        s_beep_queue = xQueueCreate(2, sizeof(ui_beep_req_t));
+        if (s_beep_queue) {
+            /* Audio generation runs on Core 0 alongside driver interrupts */
+            xTaskCreatePinnedToCore(audio_beep_task, "ui_beep", 2048, NULL, 3, NULL, 0);
         }
-        size_t written = 0;
-        atlas_audio_write(beep_buf, chunk * 2, &written, pdMS_TO_TICKS(10));
-        samples_left -= chunk;
+    }
+    if (s_beep_queue) {
+        ui_beep_req_t req = { .freq = freq, .duration_ms = duration_ms };
+        /* Non-blocking fire-and-forget: timeout 0 never stalls the UI thread */
+        xQueueSend(s_beep_queue, &req, 0);
     }
 }
 
@@ -66,14 +98,10 @@ void screen_home_run(void)
 {
     ESP_LOGI(TAG, "Launching Dynamic ATLAS Home Launcher UI...");
 
-    uint16_t *fb = (uint16_t *)heap_caps_aligned_alloc(
-        64, ATLAS_LCD_BYTES, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    /* Borrow canonical managed framebuffer in Octal PSRAM */
+    uint16_t *fb = atlas_display_get_framebuffer();
     if (!fb) {
-        fb = (uint16_t *)heap_caps_aligned_alloc(
-            64, ATLAS_LCD_BYTES, MALLOC_CAP_SPIRAM);
-    }
-    if (!fb) {
-        ESP_LOGE(TAG, "Failed to allocate home framebuffer — cannot render UI.");
+        ESP_LOGE(TAG, "Managed framebuffer unavailable — cannot render UI.");
         return;
     }
 
@@ -361,7 +389,4 @@ void screen_home_run(void)
 
         vTaskDelay(pdMS_TO_TICKS(20)); /* 50 Hz poll */
     }
-
-    /* Unreachable */
-    free(fb);
 }

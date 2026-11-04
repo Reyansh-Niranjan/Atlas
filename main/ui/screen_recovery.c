@@ -38,14 +38,10 @@ void screen_recovery_run(void)
 {
     ESP_LOGW(TAG, "Entering Atlas Recovery Safe Mode...");
 
-    uint16_t *fb = (uint16_t *)heap_caps_aligned_alloc(
-        64, ATLAS_LCD_BYTES, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    /* Borrow canonical managed framebuffer in Octal PSRAM */
+    uint16_t *fb = atlas_display_get_framebuffer();
     if (!fb) {
-        fb = (uint16_t *)heap_caps_aligned_alloc(
-            64, ATLAS_LCD_BYTES, MALLOC_CAP_SPIRAM);
-    }
-    if (!fb) {
-        ESP_LOGE(TAG, "Failed to allocate recovery framebuffer — rebooting.");
+        ESP_LOGE(TAG, "Failed to get recovery framebuffer — rebooting.");
         vTaskDelay(pdMS_TO_TICKS(1000));
         esp_restart();
         return; /* unreachable */
@@ -133,7 +129,6 @@ void screen_recovery_run(void)
             atlas_display_flush(0, 0, ATLAS_LCD_WIDTH - 1, ATLAS_LCD_HEIGHT - 1, fb);
             atlas_display_wait_flush();
             vTaskDelay(pdMS_TO_TICKS(1000));
-            free(fb);
             atlas_ota_rollback();
             return; /* unreachable */
         }
@@ -156,7 +151,6 @@ void screen_recovery_run(void)
                 atlas_display_flush(0, 0, ATLAS_LCD_WIDTH - 1, ATLAS_LCD_HEIGHT - 1, fb);
                 atlas_display_wait_flush();
                 vTaskDelay(pdMS_TO_TICKS(1500));
-                free(fb);
                 esp_restart();
                 return; /* unreachable */
             }
@@ -165,7 +159,6 @@ void screen_recovery_run(void)
         /* D: reboot immediately */
         if (in.btn_d && !last_btn_d) {
             ESP_LOGI(TAG, "Reboot requested from recovery.");
-            free(fb);
             esp_restart();
             return; /* unreachable */
         }
@@ -187,6 +180,4 @@ void screen_recovery_run(void)
 
         vTaskDelay(pdMS_TO_TICKS(40));
     }
-
-    free(fb);
 }

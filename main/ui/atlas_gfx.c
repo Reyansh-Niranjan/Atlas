@@ -123,16 +123,35 @@ void atlas_gfx_clear(uint16_t *fb, uint16_t color)
 void atlas_gfx_fill_rect(uint16_t *fb, int x, int y, int w, int h, uint16_t color)
 {
     if (!fb || x >= ATLAS_LCD_WIDTH || y >= ATLAS_LCD_HEIGHT || w <= 0 || h <= 0) return;
+    if (x + w <= 0 || y + h <= 0) return;
     int x1 = (x < 0) ? 0 : x;
     int y1 = (y < 0) ? 0 : y;
     int x2 = (x + w > ATLAS_LCD_WIDTH) ? ATLAS_LCD_WIDTH : (x + w);
     int y2 = (y + h > ATLAS_LCD_HEIGHT) ? ATLAS_LCD_HEIGHT : (y + h);
     int span = x2 - x1;
 
+    uint32_t c32 = ((uint32_t)color << 16) | (uint32_t)color;
+
     for (int j = y1; j < y2; j++) {
         uint16_t *row = &fb[j * ATLAS_LCD_WIDTH + x1];
-        for (int i = 0; i < span; i++) {
-            row[i] = color;
+        int rem = span;
+
+        /* Align to 32-bit boundary for double-pixel store */
+        if (((uintptr_t)row & 3) && rem > 0) {
+            *row++ = color;
+            rem--;
+        }
+
+        /* 32-bit word burst writes (2 pixels per store) across PSRAM bus */
+        uint32_t *row32 = (uint32_t *)row;
+        int pairs = rem >> 1;
+        for (int i = 0; i < pairs; i++) {
+            row32[i] = c32;
+        }
+
+        /* Trailing odd pixel */
+        if (rem & 1) {
+            row[rem - 1] = color;
         }
     }
 }
@@ -162,6 +181,16 @@ void atlas_gfx_draw_char(uint16_t *fb, int x, int y, char c, uint16_t fg, uint16
                     if (px >= 0 && px < ATLAS_LCD_WIDTH && py >= 0 && py < ATLAS_LCD_HEIGHT) {
                         fb[py * ATLAS_LCD_WIDTH + px] = color;
                     }
+                } else if (scale == 2) {
+                    /* Fast inlined 2x2 pixel block write without function call overhead */
+                    int px = x + (col << 1);
+                    int py = y + (row << 1);
+                    if (px >= 0 && px + 1 < ATLAS_LCD_WIDTH && py >= 0 && py + 1 < ATLAS_LCD_HEIGHT) {
+                        uint16_t *r0 = &fb[py * ATLAS_LCD_WIDTH + px];
+                        uint16_t *r1 = &fb[(py + 1) * ATLAS_LCD_WIDTH + px];
+                        r0[0] = color; r0[1] = color;
+                        r1[0] = color; r1[1] = color;
+                    }
                 } else {
                     atlas_gfx_fill_rect(fb, x + col * scale, y + row * scale, scale, scale, color);
                 }
@@ -169,7 +198,7 @@ void atlas_gfx_draw_char(uint16_t *fb, int x, int y, char c, uint16_t fg, uint16
         }
     }
 
-    /* 1-pixel trailing column for character spacing */
+    /* Trailing spacing column */
     if (bg != 0x0001) {
         if (scale == 1) {
             int px = x + 5;
@@ -177,6 +206,15 @@ void atlas_gfx_draw_char(uint16_t *fb, int x, int y, char c, uint16_t fg, uint16
                 int py = y + row;
                 if (px >= 0 && px < ATLAS_LCD_WIDTH && py >= 0 && py < ATLAS_LCD_HEIGHT) {
                     fb[py * ATLAS_LCD_WIDTH + px] = bg;
+                }
+            }
+        } else if (scale == 2) {
+            int px = x + 10;
+            for (int row = 0; row < 14; row++) {
+                int py = y + row;
+                if (px >= 0 && px + 1 < ATLAS_LCD_WIDTH && py >= 0 && py < ATLAS_LCD_HEIGHT) {
+                    fb[py * ATLAS_LCD_WIDTH + px]     = bg;
+                    fb[py * ATLAS_LCD_WIDTH + px + 1] = bg;
                 }
             }
         } else {
@@ -220,10 +258,7 @@ void atlas_gfx_draw_card(uint16_t *fb, int x, int y, int w, int h, const char *t
     atlas_gfx_draw_rect(fb, x, y, w, h, border_col);
     if (selected) {
         atlas_gfx_draw_rect(fb, x + 1, y + 1, w - 2, h - 2, border_col);
-    }
-
-    /* Accent top indicator bar on active card */
-    if (selected) {
+        /* Accent top indicator bar on active card */
         atlas_gfx_fill_rect(fb, x + 4, y + 2, w - 8, 3, COLOR_CYAN);
     }
 
