@@ -36,8 +36,8 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install PlatformIO Core
-        run: pip install platformio
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
 
       - name: Inject GROQ_API_KEY (CI)
         shell: bash
