@@ -10,7 +10,7 @@ on:
       - platformio.ini
       - partitions.csv
       - requirements.txt
-      - .github/workflows/build-firmware.yml
+      - .github/**
   pull_request:
     paths:
       - main/**
@@ -19,7 +19,8 @@ on:
       - platformio.ini
       - partitions.csv
       - requirements.txt
-      - .github/workflows/build-firmware.yml
+      - .github/**
+  workflow_dispatch:
 permissions:
   contents: write
 
