@@ -15,6 +15,8 @@
 #include "app_manager.h"
 #include "screen_home.h"
 #include "screen_recovery.h"
+#include "screen_onboarding.h"
+#include "atlas_onboarding.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -332,6 +334,9 @@ atlas_boot_stage_t atlas_boot_get_stage(void)
 static void atlas_shell_task(void *pvParam)
 {
     (void)pvParam;
+    if (atlas_onboarding_is_required()) {
+        screen_onboarding_run();
+    }
     screen_home_run();
     vTaskDelete(NULL);
 }

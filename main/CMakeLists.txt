@@ -7,16 +7,20 @@ idf_component_register(
         "core/atlas_event.c"
         "core/atlas_service.c"
         "core/atlas_sysinfo.c"
+        "core/atlas_wifi.c"
+        "core/atlas_captive.c"
         "drivers/atlas_display.c"
         "drivers/atlas_input.c"
         "drivers/atlas_audio.c"
         "drivers/atlas_sdcard.c"
         "system/app_manager.c"
         "system/atlas_ota.c"
+        "system/atlas_onboarding.c"
         "ui/atlas_gfx.c"
         "ui/screen_home.c"
         "ui/screen_recovery.c"
         "ui/screen_settings.c"
+        "ui/screen_onboarding.c"
     INCLUDE_DIRS
         "include"
         "boot"
@@ -36,6 +40,9 @@ idf_component_register(
         esp_timer
         esp_event
         esp_hw_support
+        esp_wifi
+        esp_netif
+        esp_http_server
         fatfs
         sdmmc
         nvs_flash
@@ -45,6 +52,7 @@ idf_component_register(
         app_update
         esp_partition
         wasm3
+        qrcodegen
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-unused-function -Wno-format-truncation)

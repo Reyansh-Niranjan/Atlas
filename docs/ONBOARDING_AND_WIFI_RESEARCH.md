@@ -323,3 +323,4 @@ void screen_onboarding_run(void);
   - Never traps or halts without human-readable screen diagnostics.
   - Always provides an offline bypass if the user has no Wi-Fi.
   - Provides instant support email (`reyanshniranjanodm@gmail.com`) on persistent failure.
+
