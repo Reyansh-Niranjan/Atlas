@@ -85,6 +85,19 @@ esp_err_t app_manager_get_at(size_t index, atlas_app_t *out_app);
 esp_err_t app_manager_get_by_id(const char *app_id, atlas_app_t *out_app);
 
 /**
+ * @brief Check if an application is a protected factory application (cannot be uninstalled).
+ */
+bool app_manager_is_protected(const char *app_id);
+
+/**
+ * @brief Install an application from /sdcard/packages/available/<app_id> into /sdcard/apps/installed/<app_id>.
+ *
+ * @param app_id Application package identifier.
+ * @return ESP_OK on success.
+ */
+esp_err_t app_manager_install(const char *app_id);
+
+/**
  * @brief Dispatch an application launch request.
  *
  * @return ESP_OK              - Handler executed and returned.

@@ -266,7 +266,8 @@ esp_err_t app_manager_scan_installed(void)
 
         bool duplicate = false;
         for (size_t i = 0; i < s_app_count; i++) {
-            if (strncmp(s_apps[i].app_id, app_id, sizeof(s_apps[i].app_id)) == 0) {
+            if (strncmp(s_apps[i].app_id, app_id, sizeof(s_apps[i].app_id)) == 0 ||
+                (strcmp(s_apps[i].app_id, "settings") == 0 && strcmp(app_id, "org.atlas.settings") == 0)) {
                 duplicate = true;
                 break;
             }
@@ -620,6 +621,306 @@ static esp_err_t launch_dynamic_app(const atlas_app_t *app)
     return ESP_OK;
 }
 
+#define APPS_AVAILABLE_DIR "/sdcard/packages/available"
+
+bool app_manager_is_protected(const char *app_id)
+{
+    if (!app_id) return false;
+    return (strcmp(app_id, "org.atlas.store") == 0 ||
+            strcmp(app_id, "store") == 0 ||
+            strcmp(app_id, "org.atlas.settings") == 0 ||
+            strcmp(app_id, "settings") == 0);
+}
+
+static esp_err_t copy_file(const char *src, const char *dst)
+{
+    FILE *in = fopen(src, "rb");
+    if (!in) return ESP_FAIL;
+    FILE *out = fopen(dst, "wb");
+    if (!out) {
+        fclose(in);
+        return ESP_FAIL;
+    }
+    char buf[512];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        fwrite(buf, 1, n, out);
+    }
+    fclose(in);
+    fclose(out);
+    return ESP_OK;
+}
+
+esp_err_t app_manager_install(const char *app_id)
+{
+    if (!app_id || !is_valid_app_id(app_id)) return ESP_ERR_INVALID_ARG;
+
+    char avail_dir[ATLAS_APP_PATH_MAX_LEN];
+    snprintf(avail_dir, sizeof(avail_dir), "%s/%s", APPS_AVAILABLE_DIR, app_id);
+
+    char install_dir[ATLAS_APP_PATH_MAX_LEN];
+    snprintf(install_dir, sizeof(install_dir), "%s/%s", APPS_INSTALLED_DIR, app_id);
+
+    struct stat st;
+    if (stat(avail_dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        ATLAS_LOG_WARN(ATLAS_LOG_TAG_APP, "Package '%s' not found in %s", app_id, APPS_AVAILABLE_DIR);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    mkdir(install_dir, 0777);
+
+    char src_manifest[ATLAS_APP_PATH_MAX_LEN + 16];
+    char dst_manifest[ATLAS_APP_PATH_MAX_LEN + 16];
+    snprintf(src_manifest, sizeof(src_manifest), "%s/manifest.json", avail_dir);
+    snprintf(dst_manifest, sizeof(dst_manifest), "%s/manifest.json", install_dir);
+    copy_file(src_manifest, dst_manifest);
+
+    char src_bin[ATLAS_APP_PATH_MAX_LEN + 16];
+    char dst_bin[ATLAS_APP_PATH_MAX_LEN + 16];
+    snprintf(src_bin, sizeof(src_bin), "%s/app.bin", avail_dir);
+    snprintf(dst_bin, sizeof(dst_bin), "%s/app.bin", install_dir);
+    copy_file(src_bin, dst_bin);
+
+    ATLAS_LOG_INFO(ATLAS_LOG_TAG_APP, "Package '%s' installed successfully to %s", app_id, install_dir);
+    app_manager_scan_installed();
+    return ESP_OK;
+}
+
+typedef struct {
+    char app_id[ATLAS_APP_ID_MAX_LEN];
+    char name[ATLAS_APP_NAME_MAX_LEN];
+    char version[ATLAS_APP_VERSION_MAX_LEN];
+    char tagline[ATLAS_APP_TAGLINE_MAX_LEN];
+    bool is_installed;
+    bool is_protected;
+} apkg_store_entry_t;
+
+static esp_err_t launch_apkg_store(void)
+{
+    uint16_t *fb = atlas_display_get_framebuffer();
+    if (!fb) return ESP_FAIL;
+
+    apkg_store_entry_t *entries = (apkg_store_entry_t *)malloc(sizeof(apkg_store_entry_t) * 16);
+    if (!entries) return ESP_ERR_NO_MEM;
+    memset(entries, 0, sizeof(apkg_store_entry_t) * 16);
+
+    size_t count = 0;
+
+    /* 1. Add protected Factory Apps */
+    snprintf(entries[count].app_id, sizeof(entries[count].app_id), "org.atlas.store");
+    snprintf(entries[count].name, sizeof(entries[count].name), "APKG Store");
+    snprintf(entries[count].version, sizeof(entries[count].version), "1.0.0");
+    snprintf(entries[count].tagline, sizeof(entries[count].tagline), "Install & Manage Packages");
+    entries[count].is_installed = true;
+    entries[count].is_protected = true;
+    count++;
+
+    snprintf(entries[count].app_id, sizeof(entries[count].app_id), "org.atlas.settings");
+    snprintf(entries[count].name, sizeof(entries[count].name), "Settings");
+    snprintf(entries[count].version, sizeof(entries[count].version), "1.0.0");
+    snprintf(entries[count].tagline, sizeof(entries[count].tagline), "System & Telemetry");
+    entries[count].is_installed = true;
+    entries[count].is_protected = true;
+    count++;
+
+    /* 2. Scan /sdcard/packages/available/ */
+    DIR *dir = opendir(APPS_AVAILABLE_DIR);
+    if (dir) {
+        struct dirent *de;
+        char *json_buf = (char *)malloc(MANIFEST_MAX_FILE_SIZE + 1);
+        while ((de = readdir(dir)) != NULL && count < 16) {
+            if (de->d_name[0] == '.') continue;
+            if (strcmp(de->d_name, "org.atlas.store") == 0 ||
+                strcmp(de->d_name, "org.atlas.settings") == 0) continue;
+
+            char manifest_path[ATLAS_APP_PATH_MAX_LEN + 16];
+            snprintf(manifest_path, sizeof(manifest_path), "%s/%s/manifest.json", APPS_AVAILABLE_DIR, de->d_name);
+
+            FILE *f = fopen(manifest_path, "r");
+            if (!f) continue;
+            size_t n = fread(json_buf, 1, MANIFEST_MAX_FILE_SIZE, f);
+            fclose(f);
+            json_buf[n] = '\0';
+
+            char app_id[ATLAS_APP_ID_MAX_LEN] = {0};
+            char name[ATLAS_APP_NAME_MAX_LEN] = {0};
+            char version[ATLAS_APP_VERSION_MAX_LEN] = {0};
+            char tagline[ATLAS_APP_TAGLINE_MAX_LEN] = {0};
+
+            if (json_extract_string(json_buf, "app_id", app_id, sizeof(app_id)) &&
+                json_extract_string(json_buf, "name", name, sizeof(name)) &&
+                json_extract_string(json_buf, "version", version, sizeof(version))) {
+
+                if (!json_extract_string(json_buf, "tagline", tagline, sizeof(tagline))) {
+                    snprintf(tagline, sizeof(tagline), "v%s", version);
+                }
+
+                snprintf(entries[count].app_id, sizeof(entries[count].app_id), "%s", app_id);
+                snprintf(entries[count].name, sizeof(entries[count].name), "%s", name);
+                snprintf(entries[count].version, sizeof(entries[count].version), "%s", version);
+                snprintf(entries[count].tagline, sizeof(entries[count].tagline), "%s", tagline);
+
+                /* Check if installed */
+                char chk_path[ATLAS_APP_PATH_MAX_LEN + 16];
+                snprintf(chk_path, sizeof(chk_path), "%s/%s/manifest.json", APPS_INSTALLED_DIR, app_id);
+                struct stat st;
+                entries[count].is_installed = (stat(chk_path, &st) == 0 && st.st_size > 0);
+                entries[count].is_protected = false;
+                count++;
+            }
+        }
+        if (json_buf) free(json_buf);
+        closedir(dir);
+    }
+
+    /* 3. Interactive Store Loop */
+    int selected_idx = 0;
+    atlas_input_state_t last_in = {0};
+    bool running = true;
+    char notice_msg[48] = {0};
+    int notice_timer = 0;
+
+    while (running) {
+        atlas_input_state_t in = atlas_input_get_state();
+        bool pressed_up = (in.joy_y < -50 && last_in.joy_y >= -50);
+        bool pressed_down = (in.joy_y > 50 && last_in.joy_y <= 50);
+        bool pressed_a = (in.btn_a && !last_in.btn_a);
+        bool pressed_d = (in.btn_d && !last_in.btn_d);
+        bool pressed_b = (in.btn_b && !last_in.btn_b);
+        bool pressed_c = (in.btn_c && !last_in.btn_c);
+        last_in = in;
+
+        if (pressed_up && selected_idx > 0) {
+            selected_idx--;
+            atlas_audio_play_beep(1000.0f, 15);
+        } else if (pressed_down && selected_idx + 1 < (int)count) {
+            selected_idx++;
+            atlas_audio_play_beep(1000.0f, 15);
+        }
+
+        if (pressed_b || pressed_c) {
+            atlas_audio_play_beep(700.0f, 30);
+            break;
+        }
+
+        /* [A]: Install Package */
+        if (pressed_a && count > 0) {
+            apkg_store_entry_t *cur = &entries[selected_idx];
+            if (!cur->is_installed) {
+                esp_err_t ins_err = app_manager_install(cur->app_id);
+                if (ins_err == ESP_OK) {
+                    cur->is_installed = true;
+                    atlas_audio_play_beep(1400.0f, 60);
+                    snprintf(notice_msg, sizeof(notice_msg), "INSTALLED: %s", cur->name);
+                    notice_timer = 40;
+                }
+            } else {
+                atlas_audio_play_beep(900.0f, 20);
+                snprintf(notice_msg, sizeof(notice_msg), "%s ALREADY INSTALLED", cur->name);
+                notice_timer = 30;
+            }
+        }
+
+        /* [D]: Uninstall Package */
+        if (pressed_d && count > 0) {
+            apkg_store_entry_t *cur = &entries[selected_idx];
+            if (cur->is_protected) {
+                atlas_audio_play_beep(300.0f, 100);
+                snprintf(notice_msg, sizeof(notice_msg), "LOCKED: CANNOT UNINSTALL");
+                notice_timer = 40;
+            } else if (cur->is_installed) {
+                esp_err_t unins_err = app_manager_uninstall(cur->app_id);
+                if (unins_err == ESP_OK) {
+                    cur->is_installed = false;
+                    atlas_audio_play_beep(500.0f, 60);
+                    snprintf(notice_msg, sizeof(notice_msg), "UNINSTALLED: %s", cur->name);
+                    notice_timer = 40;
+                }
+            }
+        }
+
+        /* ── Render Store UI ─────────────────────────────────────────────── */
+        atlas_gfx_clear(fb, COLOR_BG_DARK);
+
+        /* Top Header */
+        atlas_gfx_fill_rect(fb, 0, 0, ATLAS_LCD_WIDTH, 26, COLOR_PANEL_BG);
+        atlas_gfx_draw_rect(fb, 0, 25, ATLAS_LCD_WIDTH, 1, COLOR_BORDER_NORM);
+        atlas_gfx_draw_string(fb, 12, 8, "APKG STORE", COLOR_CYAN, COLOR_PANEL_BG, 1);
+
+        uint64_t total_b = 0, free_b = 0;
+        atlas_sdcard_get_info(&total_b, &free_b);
+        char cap_str[32];
+        snprintf(cap_str, sizeof(cap_str), "SD: %llu MB Free", (unsigned long long)(free_b / (1024 * 1024)));
+        atlas_gfx_draw_string(fb, 180, 8, cap_str, COLOR_WHITE, COLOR_PANEL_BG, 1);
+
+        /* App Items List */
+        int start_y = 32;
+        int item_h = 24;
+        int max_visible = 5;
+        int scroll_offset = 0;
+        if (selected_idx >= max_visible) {
+            scroll_offset = selected_idx - max_visible + 1;
+        }
+
+        for (int i = 0; i < max_visible && (i + scroll_offset) < (int)count; i++) {
+            int idx = i + scroll_offset;
+            int y = start_y + i * (item_h + 3);
+            bool is_sel = (idx == selected_idx);
+
+            uint16_t bg = is_sel ? COLOR_CYAN : COLOR_PANEL_BG;
+            uint16_t fg = is_sel ? COLOR_BLACK : COLOR_WHITE;
+
+            atlas_gfx_fill_rect(fb, 12, y, 296, item_h, bg);
+            atlas_gfx_draw_rect(fb, 12, y, 296, item_h, is_sel ? COLOR_WHITE : COLOR_BORDER_NORM);
+
+            atlas_gfx_draw_string(fb, 20, y + 6, entries[idx].name, fg, bg, 1);
+
+            /* Badges */
+            if (entries[idx].is_protected) {
+                atlas_gfx_draw_string(fb, 180, y + 6, "[FACTORY]", is_sel ? COLOR_BLACK : COLOR_CYAN, bg, 1);
+            } else if (entries[idx].is_installed) {
+                atlas_gfx_draw_string(fb, 180, y + 6, "[INSTALLED]", is_sel ? COLOR_BLACK : COLOR_GREEN, bg, 1);
+            } else {
+                atlas_gfx_draw_string(fb, 180, y + 6, "[AVAILABLE]", is_sel ? COLOR_BLACK : COLOR_YELLOW, bg, 1);
+            }
+        }
+
+        /* Detail Card */
+        atlas_gfx_fill_rect(fb, 12, 168, 296, 42, COLOR_PANEL_BG);
+        atlas_gfx_draw_rect(fb, 12, 168, 296, 42, COLOR_BORDER_NORM);
+
+        if (notice_timer > 0) {
+            notice_timer--;
+            atlas_gfx_draw_string_centered(fb, 182, notice_msg, COLOR_YELLOW, COLOR_PANEL_BG, 1);
+        } else if (count > 0) {
+            apkg_store_entry_t *cur = &entries[selected_idx];
+            atlas_gfx_draw_string(fb, 20, 172, cur->tagline, COLOR_WHITE, COLOR_PANEL_BG, 1);
+
+            if (cur->is_protected) {
+                atlas_gfx_draw_string(fb, 20, 190, "Protected Factory App (Cannot uninstall)", COLOR_TEXT_MUTED, COLOR_PANEL_BG, 1);
+            } else if (cur->is_installed) {
+                atlas_gfx_draw_string(fb, 20, 190, "Installed! Press [D] to Uninstall", COLOR_RED, COLOR_PANEL_BG, 1);
+            } else {
+                atlas_gfx_draw_string(fb, 20, 190, "Available! Press [A] to Install Package", COLOR_GREEN, COLOR_PANEL_BG, 1);
+            }
+        }
+
+        /* Bottom Footer */
+        atlas_gfx_fill_rect(fb, 0, 214, ATLAS_LCD_WIDTH, 26, COLOR_PANEL_BG);
+        atlas_gfx_draw_rect(fb, 0, 214, ATLAS_LCD_WIDTH, 1, COLOR_BORDER_NORM);
+        atlas_gfx_draw_string(fb, 12, 222, "[A] Install  [D] Uninstall  [B/C] Return Home", COLOR_YELLOW, COLOR_PANEL_BG, 1);
+
+        atlas_display_flush(0, 0, ATLAS_LCD_WIDTH - 1, ATLAS_LCD_HEIGHT - 1, fb);
+        atlas_display_wait_flush();
+        vTaskDelay(pdMS_TO_TICKS(40));
+    }
+
+    free(entries);
+    /* Rescan installed apps so Home Launcher picks up any additions/removals */
+    app_manager_scan_installed();
+    return ESP_OK;
+}
+
 esp_err_t app_manager_launch(const char *app_id)
 {
     if (!app_id) return ESP_ERR_INVALID_ARG;
@@ -629,6 +930,17 @@ esp_err_t app_manager_launch(const char *app_id)
     if (err != ESP_OK) {
         ATLAS_LOG_WARN(ATLAS_LOG_TAG_APP, "Launch requested for unknown app '%s'", app_id);
         return err;
+    }
+
+    if (strcmp(app.app_id, "org.atlas.store") == 0 || strcmp(app.app_id, "store") == 0) {
+        ATLAS_LOG_INFO(ATLAS_LOG_TAG_APP, "Launching dynamic APKG Store browser...");
+        return launch_apkg_store();
+    }
+
+    if (strcmp(app.app_id, "org.atlas.settings") == 0 || strcmp(app.app_id, "settings") == 0) {
+        ATLAS_LOG_INFO(ATLAS_LOG_TAG_APP, "Launching System Settings...");
+        screen_settings_run();
+        return ESP_OK;
     }
 
     if (!app.is_launchable) {
@@ -698,10 +1010,10 @@ esp_err_t app_manager_uninstall(const char *app_id)
         return ESP_ERR_NOT_FOUND;
     }
 
-    /* Built-in applications CANNOT be uninstalled */
-    if (s_apps[found_idx].type == ATLAS_APP_TYPE_BUILTIN) {
+    /* Protected factory applications & built-ins CANNOT be uninstalled */
+    if (app_manager_is_protected(app_id) || s_apps[found_idx].type == ATLAS_APP_TYPE_BUILTIN) {
         xSemaphoreGive(s_app_mutex);
-        ATLAS_LOG_ERROR(ATLAS_LOG_TAG_APP, "Cannot uninstall built-in application '%s'.", app_id);
+        ATLAS_LOG_ERROR(ATLAS_LOG_TAG_APP, "Cannot uninstall protected factory application '%s'.", app_id);
         return ESP_ERR_NOT_SUPPORTED;
     }
 

@@ -515,14 +515,19 @@ static const uint8_t s_app_bin_synth[] = {
     'A', 'T', 'L', 'S', ' ', ' ', ' ', ' ', ' ', ' ', ' ', 0x55, 0xC2, 0xAA, 0x55, 0xC2, 0xAA, 0x0A
 };
 
-static const atlas_bundled_app_t s_bundled_apps[] = {
+/* Factory Applications (Pre-installed in /sdcard/apps/installed/ on first boot - Protected) */
+static const atlas_bundled_app_t s_factory_apps[] = {
     { "org.atlas.store",     s_manifest_store,     s_app_bin_store,     sizeof(s_app_bin_store) },
     { "org.atlas.settings",  s_manifest_settings,  s_app_bin_settings,  sizeof(s_app_bin_settings) },
+};
+
+/* Available Applications (Staged in /sdcard/packages/available/ to be installed via APKG Store) */
+static const atlas_bundled_app_t s_available_apps[] = {
+    { "org.atlas.assistant", s_manifest_assistant, s_app_bin_gemini,    sizeof(s_app_bin_gemini) - 1 },
+    { "org.atlas.invaders",  s_manifest_invaders,  s_app_bin_invaders,  sizeof(s_app_bin_invaders) },
+    { "org.atlas.synth",     s_manifest_synth,     s_app_bin_synth,     sizeof(s_app_bin_synth) },
     { "org.atlas.calc",      s_manifest_calc,      s_app_bin_calc,      sizeof(s_app_bin_calc) },
     { "org.atlas.notes",     s_manifest_notes,     s_app_bin_notes,     sizeof(s_app_bin_notes) },
-    { "org.atlas.synth",     s_manifest_synth,     s_app_bin_synth,     sizeof(s_app_bin_synth) },
-    { "org.atlas.invaders",  s_manifest_invaders,  s_app_bin_invaders,  sizeof(s_app_bin_invaders) },
-    { "org.atlas.assistant", s_manifest_assistant, s_app_bin_gemini,    sizeof(s_app_bin_gemini) - 1 },
 };
 
 static bool file_exists_on_sd(const char *path)
@@ -563,6 +568,7 @@ esp_err_t atlas_onboarding_populate_sdcard(void)
         "/sdcard/apps",
         "/sdcard/apps/installed",
         "/sdcard/packages",
+        "/sdcard/packages/available",
         "/sdcard/packages/downloads",
         "/sdcard/data",
         "/sdcard/config",
@@ -599,12 +605,42 @@ esp_err_t atlas_onboarding_populate_sdcard(void)
         }
     }
 
-    /* 5. Pre-seed Default Application Packages in /sdcard/apps/installed/<app_id>/ */
-    for (size_t i = 0; i < sizeof(s_bundled_apps) / sizeof(s_bundled_apps[0]); i++) {
-        const atlas_bundled_app_t *app = &s_bundled_apps[i];
+    /* 5. Pre-seed ONLY the 2 Factory Applications in /sdcard/apps/installed/<app_id>/ */
+    for (size_t i = 0; i < sizeof(s_factory_apps) / sizeof(s_factory_apps[0]); i++) {
+        const atlas_bundled_app_t *app = &s_factory_apps[i];
 
         char app_dir[96];
         snprintf(app_dir, sizeof(app_dir), "/sdcard/apps/installed/%s", app->app_id);
+        struct stat st_dir;
+        if (stat(app_dir, &st_dir) != 0) {
+            if (mkdir(app_dir, 0777) == 0) {
+                created_count++;
+            }
+        }
+
+        char manifest_path[128];
+        snprintf(manifest_path, sizeof(manifest_path), "%s/manifest.json", app_dir);
+        if (!file_exists_on_sd(manifest_path)) {
+            if (write_file_if_missing(manifest_path, app->manifest_json, strlen(app->manifest_json)) == ESP_OK) {
+                created_count++;
+            }
+        }
+
+        char bin_path[128];
+        snprintf(bin_path, sizeof(bin_path), "%s/app.bin", app_dir);
+        if (!file_exists_on_sd(bin_path)) {
+            if (write_file_if_missing(bin_path, app->bin_bytes, app->bin_len) == ESP_OK) {
+                created_count++;
+            }
+        }
+    }
+
+    /* 6. Pre-seed Community Applications into /sdcard/packages/available/<app_id>/ for APKG Store */
+    for (size_t i = 0; i < sizeof(s_available_apps) / sizeof(s_available_apps[0]); i++) {
+        const atlas_bundled_app_t *app = &s_available_apps[i];
+
+        char app_dir[96];
+        snprintf(app_dir, sizeof(app_dir), "/sdcard/packages/available/%s", app->app_id);
         struct stat st_dir;
         if (stat(app_dir, &st_dir) != 0) {
             if (mkdir(app_dir, 0777) == 0) {

@@ -409,7 +409,7 @@ void screen_onboarding_run(void)
             }
 
             atlas_gfx_draw_string(fb, 36, 126, "Storage      : MicroSD FatFS Mounted", COLOR_TEXT_MAIN, COLOR_PANEL_BG, 1);
-            atlas_gfx_draw_string(fb, 36, 146, "Applications : 7 Installed Packages Ready", COLOR_GREEN, COLOR_PANEL_BG, 1);
+            atlas_gfx_draw_string(fb, 36, 146, "Applications : 2 Factory Apps (Store Active)", COLOR_GREEN, COLOR_PANEL_BG, 1);
             atlas_gfx_draw_string(fb, 36, 168, "Press [A] to launch cybernetic desktop...", COLOR_YELLOW, COLOR_PANEL_BG, 1);
 
             draw_footer(fb, "[A] Launch ATLAS Desktop");
