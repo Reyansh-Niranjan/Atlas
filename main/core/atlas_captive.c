@@ -5,6 +5,7 @@
 #include "atlas_captive.h"
 #include "atlas_log.h"
 #include "atlas_wifi.h"
+#include "atlas_onboarding.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -45,6 +46,7 @@ static const char s_portal_html[] =
 "<form id='f' action='/api/connect' method='POST'>"
 "<label>WI-FI NETWORK (SSID):</label><input type='text' name='ssid' id='s' required placeholder='Enter network name'>"
 "<label>WI-FI PASSWORD:</label><input type='password' name='pass' id='p' placeholder='Enter password (leave blank if open)'>"
+"<label>GOOGLE GEMINI API KEY (OPTIONAL):</label><input type='text' name='gemini' id='g' placeholder='AIzaSy... (for Gemini Live app)'>"
 "<button type='submit' id='b'>CONNECT ATLAS</button>"
 "<div class='status' id='st'>Sending credentials to Atlas...</div>"
 "</form></div>"
@@ -144,7 +146,7 @@ static esp_err_t portal_root_get_handler(httpd_req_t *req)
 
 static esp_err_t portal_connect_post_handler(httpd_req_t *req)
 {
-    char buf[256];
+    char buf[512];
     int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (ret <= 0) {
         httpd_resp_send_500(req);
@@ -154,6 +156,7 @@ static esp_err_t portal_connect_post_handler(httpd_req_t *req)
 
     char ssid[64] = {0};
     char pass[64] = {0};
+    char gemini[128] = {0};
 
     char *token = strtok(buf, "&");
     while (token) {
@@ -161,6 +164,8 @@ static esp_err_t portal_connect_post_handler(httpd_req_t *req)
             snprintf(ssid, sizeof(ssid), "%s", token + 5);
         } else if (strncmp(token, "pass=", 5) == 0) {
             snprintf(pass, sizeof(pass), "%s", token + 5);
+        } else if (strncmp(token, "gemini=", 7) == 0) {
+            snprintf(gemini, sizeof(gemini), "%s", token + 7);
         }
         token = strtok(NULL, "&");
     }
@@ -172,8 +177,15 @@ static esp_err_t portal_connect_post_handler(httpd_req_t *req)
     for (size_t i = 0; i < strlen(pass); i++) {
         if (pass[i] == '+') pass[i] = ' ';
     }
+    for (size_t i = 0; i < strlen(gemini); i++) {
+        if (gemini[i] == '+') gemini[i] = ' ';
+    }
 
     ATLAS_LOG_INFO(ATLAS_LOG_TAG_CORE, "Captive portal received credentials for SSID: '%s'", ssid);
+
+    if (strlen(gemini) > 0) {
+        atlas_onboarding_write_gemini_key(gemini);
+    }
 
     if (s_cred_callback && strlen(ssid) > 0) {
         s_cred_callback(ssid, pass);
@@ -242,7 +254,7 @@ esp_err_t atlas_captive_start(atlas_captive_cred_cb_t cred_cb, char *out_ssid, s
 
     /* Start HTTP Server */
     httpd_config_t http_cfg = HTTPD_DEFAULT_CONFIG();
-    http_cfg.max_uri_handlers = 8;
+    http_cfg.max_uri_handlers = 12;
     http_cfg.stack_size = 4096;
 
     if (httpd_start(&s_http_server, &http_cfg) == ESP_OK) {
@@ -271,7 +283,7 @@ esp_err_t atlas_captive_start(atlas_captive_cred_cb_t cred_cb, char *out_ssid, s
         };
         httpd_register_uri_handler(s_http_server, &apple_uri);
 
-        /* Android captive portal detection endpoint */
+        /* Android / Chrome captive portal detection endpoints */
         httpd_uri_t google_uri = {
             .uri = "/generate_204",
             .method = HTTP_GET,
@@ -279,6 +291,40 @@ esp_err_t atlas_captive_start(atlas_captive_cred_cb_t cred_cb, char *out_ssid, s
             .user_ctx = NULL
         };
         httpd_register_uri_handler(s_http_server, &google_uri);
+
+        httpd_uri_t gen204_uri = {
+            .uri = "/gen_204",
+            .method = HTTP_GET,
+            .handler = portal_redirect_handler,
+            .user_ctx = NULL
+        };
+        httpd_register_uri_handler(s_http_server, &gen204_uri);
+
+        /* Windows NCSI & connecttest endpoints */
+        httpd_uri_t win_uri1 = {
+            .uri = "/connecttest.txt",
+            .method = HTTP_GET,
+            .handler = portal_redirect_handler,
+            .user_ctx = NULL
+        };
+        httpd_register_uri_handler(s_http_server, &win_uri1);
+
+        httpd_uri_t win_uri2 = {
+            .uri = "/ncsi.txt",
+            .method = HTTP_GET,
+            .handler = portal_redirect_handler,
+            .user_ctx = NULL
+        };
+        httpd_register_uri_handler(s_http_server, &win_uri2);
+
+        /* Linux / Firefox detection endpoint */
+        httpd_uri_t linux_uri = {
+            .uri = "/success.txt",
+            .method = HTTP_GET,
+            .handler = portal_redirect_handler,
+            .user_ctx = NULL
+        };
+        httpd_register_uri_handler(s_http_server, &linux_uri);
     }
 
     ATLAS_LOG_INFO(ATLAS_LOG_TAG_CORE, "SoftAP Captive Portal started on SSID: '%s' (IP: 192.168.4.1)", ssid);

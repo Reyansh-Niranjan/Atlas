@@ -309,6 +309,23 @@ esp_err_t atlas_onboarding_parse_gemini_key(char *out_key, size_t key_len)
     return (out_key[0] != '\0') ? ESP_OK : ESP_FAIL;
 }
 
+esp_err_t atlas_onboarding_write_gemini_key(const char *api_key)
+{
+    if (!api_key || strlen(api_key) == 0) return ESP_ERR_INVALID_ARG;
+
+    FILE *f = fopen(ATLAS_GEMINI_KEY_TXT_PATH, "w");
+    if (!f) return ESP_FAIL;
+
+    fprintf(f, "# =========================================================\n");
+    fprintf(f, "# ATLAS OS - GEMINI LIVE AI COMMUNICATOR KEY\n");
+    fprintf(f, "# =========================================================\n");
+    fprintf(f, "GEMINI_API_KEY=%s\n", api_key);
+    fclose(f);
+
+    ATLAS_LOG_INFO(ATLAS_LOG_TAG_SYS, "Saved Gemini API key to %s", ATLAS_GEMINI_KEY_TXT_PATH);
+    return ESP_OK;
+}
+
 /* ── Bundled System Assets & Auto-Seeding Tables ──────────────────────────── */
 
 static const char s_readme_txt[] =

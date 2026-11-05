@@ -77,6 +77,14 @@ esp_err_t atlas_onboarding_write_wifi_file(const char *ssid, const char *passwor
 esp_err_t atlas_onboarding_parse_gemini_key(char *out_key, size_t key_len);
 
 /**
+ * @brief Write Gemini API key to /sdcard/gemini_key.txt.
+ *
+ * @param api_key API key string.
+ * @return ESP_OK on success.
+ */
+esp_err_t atlas_onboarding_write_gemini_key(const char *api_key);
+
+/**
  * @brief Populate an empty or freshly inserted MicroSD card with all required
  * system directories, configuration templates (wifi.txt, gemini_key.txt),
  * root storage README.txt guide, and default application packages (Store, Settings,
