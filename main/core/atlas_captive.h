@@ -36,3 +36,4 @@ bool atlas_captive_is_running(void);
 #ifdef __cplusplus
 }
 #endif
+

@@ -104,24 +104,8 @@ static void boot_stage_storage(void)
         ATLAS_LOG_INFO(ATLAS_LOG_TAG_BOOT, "MicroSD FAT32: %llu MB",
                        s_diag_snapshot.sdcard_size_bytes / (1024 * 1024));
 
-        /* Ensure standardized directory structure exists on card */
-        const char *std_dirs[] = {
-            "/sdcard/system",
-            "/sdcard/system/firmware",
-            "/sdcard/system/recovery",
-            "/sdcard/apps",
-            "/sdcard/apps/installed",
-            "/sdcard/packages",
-            "/sdcard/packages/downloads",
-            "/sdcard/data",
-            "/sdcard/config",
-            "/sdcard/cache",
-            "/sdcard/logs"
-        };
-        for (size_t i = 0; i < sizeof(std_dirs) / sizeof(std_dirs[0]); i++) {
-            mkdir(std_dirs[i], 0777);
-        }
-
+        /* Auto-populate empty or unseeded SD card with required dirs, configs, and apps */
+        atlas_onboarding_populate_sdcard();
         atlas_event_storage_t evt = {
             .mount_point = ATLAS_SD_MOUNT_POINT,
             .total_bytes = s_diag_snapshot.sdcard_size_bytes,

@@ -14,6 +14,7 @@ extern "C" {
 
 #define ATLAS_ONBOARDING_FILE_PATH     "/sdcard/config/onboarding.json"
 #define ATLAS_WIFI_TXT_PATH            "/sdcard/wifi.txt"
+#define ATLAS_GEMINI_KEY_TXT_PATH      "/sdcard/gemini_key.txt"
 
 typedef struct {
     bool is_completed;
@@ -67,6 +68,27 @@ esp_err_t atlas_onboarding_ensure_wifi_template(void);
 esp_err_t atlas_onboarding_write_wifi_file(const char *ssid, const char *password);
 
 /**
+ * @brief Parse /sdcard/gemini_key.txt to extract Gemini API key.
+ *
+ * @param out_key Buffer to store parsed API key.
+ * @param key_len Size of out_key.
+ * @return ESP_OK if valid API key was found.
+ */
+esp_err_t atlas_onboarding_parse_gemini_key(char *out_key, size_t key_len);
+
+/**
+ * @brief Populate an empty or freshly inserted MicroSD card with all required
+ * system directories, configuration templates (wifi.txt, gemini_key.txt),
+ * root storage README.txt guide, and default application packages (Store, Settings,
+ * Calc, Notes, Synth, Invaders, Gemini Live) in /sdcard/apps/installed/.
+ *
+ * Idempotent: Does not overwrite existing user applications or configurations.
+ *
+ * @return ESP_OK on success.
+ */
+esp_err_t atlas_onboarding_populate_sdcard(void);
+
+/**
  * @brief Perform a complete Factory Reset:
  * - Erases all NVS flash partitions
  * - Unlinks onboarding.json and wifi.txt from SD card
@@ -77,3 +99,4 @@ void atlas_onboarding_perform_factory_reset(void);
 #ifdef __cplusplus
 }
 #endif
+

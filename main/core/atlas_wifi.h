@@ -83,3 +83,4 @@ const char *atlas_wifi_get_last_error_desc(void);
 #ifdef __cplusplus
 }
 #endif
+
