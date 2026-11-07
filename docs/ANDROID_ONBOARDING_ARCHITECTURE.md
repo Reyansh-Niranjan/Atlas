@@ -16,9 +16,9 @@
 In the Android operating system family (AOSP, Google Mobile Services, Wear OS, Google TV, Android Auto), device onboarding is not treated as an ad-hoc screen. It is an explicit, staged system service governed by the **Provisioning State Machine** and **SetupWizard** pipeline.
 
 For a resource-constrained, non-touch handheld device like ATLAS (ESP32-S3, 320x240 LCD, joystick + physical tactile buttons), Google TV and Wear OS offer the most relevant design models:
-1. **Physical Remote / Controller Constraints:** Google TV cannot assume touch input; typing long passwords with a D-pad is error-prone and frustrating.
+1. **Physical Remote / Controller Constraints:** Google TV cannot assume touch input. Typing long passwords with a D-pad is error-prone and frustrating.
 2. **Dual-Path Provisioning:** Google TV provides two immediate paths:
-   - **Path A (Phone / QR Code Fast Pair):** Point your phone camera at a QR code; credentials, accounts, and network profiles transfer seamlessly.
+   - **Path A (Phone / QR Code Fast Pair):** Point the phone camera at a QR code to transfer Wi-Fi credentials directly.
    - **Path B (On-Device Manual Fallback):** Configure network manually using physical controls or external storage.
 3. **Graceful Degradation:** Users can always choose **"Set Up Offline"** to reach the launcher immediately without being blocked by lack of internet.
 
@@ -37,8 +37,8 @@ Settings.Secure.putInt(getContentResolver(), Settings.Secure.USER_SETUP_COMPLETE
 ### Architectural Responsibilities:
 | AOSP Concept | Purpose in Android | Ported Equivalent in ATLAS OS |
 |---|---|---|
-| `DEVICE_PROVISIONED` | Hardware and firmware are initialized; core partitions mounted. | `atlas_boot.c` Stage 7 (`s_diag_snapshot.sdcard_ok`, partition validation). |
-| `USER_SETUP_COMPLETE` | User completed setup wizard; launcher is now the primary shell. | `/sdcard/config/onboarding.json` (`onboarding_completed: true`) & NVS `onboard_ver`. |
+| `DEVICE_PROVISIONED` | Hardware initialized and core partitions mounted. | `atlas_boot.c` Stage 7 (`s_diag_snapshot.sdcard_ok`, partition validation). |
+| `USER_SETUP_COMPLETE` | User completed setup wizard. Launcher is now the active shell. | `/sdcard/config/onboarding.json` (`onboarding_completed: true`) & NVS `onboard_ver`. |
 | `Provision.apk` | Self-disabling setup gatekeeper before launching `Launcher.apk`. | `screen_onboarding.c` invoked by `atlas_boot.c` before `screen_home_run()`. |
 | `POST_OTA_UPDATE` | Detects OS upgrade; displays "What's New" rather than re-provisioning. | `atlas_onboarding_state_t.is_update_reonboard` (`completed_version != running_version`). |
 
@@ -130,6 +130,6 @@ flowchart TD
 - **Port:** Pressing `[D] Skip / Set Up Offline` allows immediate device access. Onboarding marks `is_completed: true` with `wifi_configured: false`.
 
 ### Feature 5: Post-OTA Non-Destructive "What's New" Experience
-- **Android Standard:** OS updates trigger a "What's New" tour highlighting release notes; network credentials and user data are strictly preserved.
+- **Android Standard:** OS updates display release notes while preserving existing network credentials and user data.
 - **Port:** When `s_onboard_state.is_update_reonboard` is true, Atlas presents the update changelog, verifies existing Wi-Fi link in the background, and advances directly to the desktop with `[A] Continue`.
 

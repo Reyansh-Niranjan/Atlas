@@ -59,7 +59,7 @@ This report evaluates every viable RTOS alternative against primary source docum
 
 #### Capabilities & Advantages for ATLAS
 1. **Standardized Subsystem Architecture:**
-   - Display, audio, storage, and sensors are abstracted through unified Zephyr subsystems.
+   - Subsystems abstract display, audio, storage as well as external sensors.
    - Built-in native LVGL module integration.
 2. **Multi-Vendor Portability:**
    - UI code and drivers can be ported across STM32, NXP, Nordic, and Espressif chips with minimal alterations.

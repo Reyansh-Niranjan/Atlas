@@ -59,7 +59,7 @@ Atlas/
 | **Audio Driver** | `atlas_audio.c/.h` | MAX98357A I2S TX (I2S_NUM_0) and INMP441 I2S RX (I2S_NUM_1). Volume acoustic clamping. | Fully operational driver. |
 | **SD Driver** | `atlas_sdcard.c/.h` | MicroSD over SPI2_HOST via SDSPI and FatFS, mounted at `/sdcard`. | Stable SDSPI at 20 MHz with bus isolation. |
 | **Home Screen** | `screen_home.c/.h` | 2x2 grid card launcher. Maps cards to stable `APP_ID_*` identifiers. Handles input polling and rendering. | Interactive, but cards are statically declared. |
-| **Recovery Safe Mode** | `screen_recovery.c/.h` | Emergency recovery UI. Supports armed 2-step NVS factory erase, reboot, and boot continuation. | Operational and safe. |
+| **Recovery Safe Mode** | `screen_recovery.c/.h` | Emergency recovery UI. Supports armed 2-step NVS factory erase, reboot, or boot continuation. | Operational and safe. |
 | **Graphics Primitives** | `atlas_gfx.c/.h` | In-memory 16-bit RGB565 pixel manipulation (rectangles, text, centering, outlines). | Optimized CPU rendering. |
 
 ---
@@ -181,7 +181,7 @@ The baseline build was executed with the real PlatformIO environment:
 4. **No Service Registry or Lifecycle Management:**
    Services (Input task, App Registry, Audio) are initialized ad-hoc. There is no registry to inspect service states (uninitialized, running, failed, stopped).
 5. **No Structured System Information API:**
-   Memory, PSRAM, uptime, and storage status are calculated separately in different files (`atlas_init.c`, `screen_home.c`, `screen_recovery.c`).
+   Memory and PSRAM diagnostics are calculated separately from storage metrics across multiple files (`atlas_init.c`, `screen_home.c`, `screen_recovery.c`).
 6. **Mixed Concerns in Application Registry:**
    `app_registry.c` manages NVS storage, SD card directory traversal, in-firmware app dispatching, and low-level OTA firmware flashing.
 7. **Ponytail Audit Findings:**
@@ -195,13 +195,13 @@ The baseline build was executed with the real PlatformIO environment:
 1. **Decompose Boot into Structured Boot Manager:**
    Create `boot/atlas_boot.h` and `boot/atlas_boot.c` to orchestrate discrete boot stages: Early Hardware -> Storage -> Peripherals -> Diagnostics -> Recovery Check -> Services -> Shell Launch.
 2. **Implement Native Event System:**
-   Leverage ESP-IDF's lightweight, battle-tested `esp_event` default loop (`core/atlas_event.h/.c`) with typed event bases (`ATLAS_SYSTEM_EVENTS`, `ATLAS_STORAGE_EVENTS`, `ATLAS_INPUT_EVENTS`).
+   Use ESP-IDF's native `esp_event` default loop (`core/atlas_event.h/.c`) with typed event bases (`ATLAS_SYSTEM_EVENTS`, `ATLAS_STORAGE_EVENTS`, `ATLAS_INPUT_EVENTS`).
 3. **Centralize Component Logging:**
    Provide `core/atlas_log.h` wrapping `esp_log.h` with standard ATLAS log levels, uniform formatting, and component tagging.
 4. **Lightweight Service Registry:**
    Implement `core/atlas_service.h/.c` to register core services, enforce dependency order, track runtime status, and expose state.
 5. **Read-Only System Information API:**
-   Create `core/atlas_sysinfo.h/.c` querying hardware, heap, PSRAM, storage, and uptime truthful metrics.
+   Create `core/atlas_sysinfo.h/.c` to report verified metrics for heap memory and storage.
 6. **Storage VFS Architecture:**
    Formalize `/sdcard` and internal `/spiffs` mappings into a coherent VFS design (`docs/STORAGE_DESIGN.md`).
 7. **Future Application & Runtime Design:**

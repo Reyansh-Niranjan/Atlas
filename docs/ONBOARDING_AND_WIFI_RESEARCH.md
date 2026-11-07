@@ -188,7 +188,7 @@ If the user selects **Manual Setup** or the card is plugged into a PC:
   SSID=MyHomeNetwork
   PASSWORD=MySecretPassword123
   ```
-- **Robust Parser Logic:**
+- **Parser Specifications:**
   - Strips leading/trailing whitespace and Carriage Return (`\r\n`).
   - Ignores comments (`#` and `;`).
   - Handles surrounding quotes (`SSID="My Network"` -> `My Network`).

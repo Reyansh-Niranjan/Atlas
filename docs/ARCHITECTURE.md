@@ -8,7 +8,7 @@
 
 ## 1. Architectural Philosophy: Linux Concepts for Embedded Systems
 
-ATLAS OS adapts core Linux architectural paradigms to resource-constrained microcontrollers without running a monolithic MMU kernel.
+ATLAS OS adapts core Linux architectural concepts to resource-constrained microcontrollers without running a monolithic MMU kernel.
 
 | Linux Concept | ATLAS OS Equivalent | Implementation Mechanism |
 |---|---|---|
@@ -120,7 +120,7 @@ Read-only truthful hardware and kernel telemetry:
 
 1. **Launcher Shell:** Renders UI cards. It never interacts with the SD card driver directly.
 2. **Application Manager:** Validates whether an application has a compatible runtime before displaying it as launchable.
-3. **Package Manager:** Handles discovery, signature verification, installation, and asset decompression of `.apkg` bundles.
+3. **Package Manager:** Handles discovery, signature verification, and installation of `.apkg` bundles.
 4. **Application Runtime:** Manages the execution environment and sandbox boundaries.
 
 ### 4.2 Runtime Alternatives Comparison
@@ -156,7 +156,7 @@ In Milestone 2, the hardcoded application cards (`s_cards[4]`: APKG Store, NovaS
 - **Runtime Enforcing:** Applications specifying unsupported runtimes (`wasm`, `native`) are marked `is_launchable = false`, preventing invalid dispatch and displaying honest UI toasts.
 - **Launcher Integration (`screen_home.c`):**
   - Dynamic card generation from catalogue.
-  - Multi-page pagination (4 cards per page, 2x2 grid) with seamless joystick and button navigation.
+  - Multi-page pagination (4 cards per page, 2x2 grid) with joystick and button navigation.
   - Empty catalogue state handling.
   - SD-card availability indicator pill (`[SD:OK]` vs. `[NO SD]`).
   - Decoupled event notifications via `ATLAS_EVENT_APP_CATALOGUE_CHANGED`.

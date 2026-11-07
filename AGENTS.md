@@ -19,7 +19,7 @@ When the user invokes the native `/plan` slash command, switches to Plan mode, o
 
 ### Analytical Skill Orchestration (8 Skills)
 During planning and architectural evaluation, you **MUST** explicitly load and apply the following eight project-installed specialist skills by reading their instructions:
-1. [`codebase-design`](file:///D:/Atlas/.agents/skills/codebase-design/SKILL.md): Design deep modules (narrow interface, rich implementation), Michael Feathers seams, testable leverage, and locality.
+1. [`codebase-design`](file:///D:/Atlas/.agents/skills/codebase-design/SKILL.md): Design deep modules (narrow interface, rich implementation), Michael Feathers seams, test isolation points, and locality.
 2. [`domain-modeling`](file:///D:/Atlas/.agents/skills/domain-modeling/SKILL.md): Ground plans in ATLAS domain concepts (`docs/ARCHITECTURE.md`), challenge fuzzy terminology, and draft ADRs where decisions are non-obvious.
 3. [`improve-codebase-architecture`](file:///D:/Atlas/.agents/skills/improve-codebase-architecture/SKILL.md): Scan for shallow layers, boundary leaks, and structural friction before proposing changes.
 4. [`karpathy-guidelines`](file:///D:/Atlas/.agents/skills/karpathy-guidelines/SKILL.md): Think before coding, simplicity first, surgical scope, and verifiable success criteria.
@@ -46,7 +46,7 @@ During planning and architectural evaluation, you **MUST** explicitly load and a
 5. **Map Implementation State:** Clearly distinguish implemented, partially implemented, and proposed functionality.
 6. **Detect Duplicate & Unnecessary Abstractions:** Audit existing modules using Ponytail and Codebase Design to avoid reinventing existing patterns.
 7. **Analyze Architectural Friction:** Ensure proposed changes increase module depth and preserve locality.
-8. **Audit for Slop:** Keep proposed interfaces minimal, clean, and free from speculative configuration layers.
+8. **Audit for Slop:** Keep proposed interfaces minimal, avoiding speculative configuration layers.
 9. **Evaluate Hardware Constraints:** Validate against embedded memory, DMA buffers, flash wear, and CPU scheduling.
 10. **Identify Risks & Trade-Offs:** Explicitly list affected subsystems, breaking changes, and prerequisites.
 11. **Develop an Actionable Implementation Plan:** Specify exact files to create, modify, or delete with concrete interface signatures.
