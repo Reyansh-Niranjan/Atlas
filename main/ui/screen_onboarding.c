@@ -254,8 +254,8 @@ void screen_onboarding_run(void)
             snprintf(ssid_sub, sizeof(ssid_sub), "%s", s_softap_ssid);
             atlas_gfx_draw_string(fb, 176, 106, ssid_sub, COLOR_CYAN, COLOR_PANEL_BG, 1);
 
-            atlas_gfx_draw_string(fb, 176, 128, "3. Setup page", COLOR_WHITE, COLOR_PANEL_BG, 1);
-            atlas_gfx_draw_string(fb, 176, 144, "opens in browser", COLOR_WHITE, COLOR_PANEL_BG, 1);
+            atlas_gfx_draw_string(fb, 176, 126, "3. Auto-opens portal", COLOR_WHITE, COLOR_PANEL_BG, 1);
+            atlas_gfx_draw_string(fb, 176, 142, "   or: atlas.local", COLOR_YELLOW, COLOR_PANEL_BG, 1);
             atlas_gfx_draw_string(fb, 176, 164, "4. Submit Wi-Fi", COLOR_GREEN, COLOR_PANEL_BG, 1);
 
             draw_footer(fb, "[B] Cancel / Switch to Manual SD Card");

@@ -25,8 +25,28 @@ static httpd_handle_t           s_http_server = NULL;
 static esp_netif_t             *s_ap_netif = NULL;
 static TaskHandle_t             s_dns_task_handle = NULL;
 static int                      s_dns_sock = -1;
+static int                      s_mdns_sock = -1;
 static bool                     s_running = false;
 static atlas_captive_cred_cb_t  s_cred_callback = NULL;
+
+/* Pre-compiled RFC 6762 mDNS Response for 'atlas.local' -> 192.168.4.1 */
+static const uint8_t s_mdns_response[] = {
+    0x00, 0x00,             /* Transaction ID: 0 */
+    0x84, 0x00,             /* Flags: Response + Authoritative */
+    0x00, 0x00,             /* Questions: 0 */
+    0x00, 0x01,             /* Answers: 1 */
+    0x00, 0x00,             /* Authority RRs: 0 */
+    0x00, 0x00,             /* Additional RRs: 0 */
+    /* Name: "atlas.local" */
+    0x05, 'a', 't', 'l', 'a', 's',
+    0x05, 'l', 'o', 'c', 'a', 'l',
+    0x00,
+    0x00, 0x01,             /* Type: A */
+    0x80, 0x01,             /* Class: IN (cache-flush) */
+    0x00, 0x00, 0x00, 0x78, /* TTL: 120 seconds */
+    0x00, 0x04,             /* Data length: 4 */
+    192, 168, 4, 1          /* IP: 192.168.4.1 */
+};
 
 /* ── Embedded Retro Mobile HTML Setup Portal ─────────────────────────────── */
 static const char s_portal_html[] =
@@ -58,116 +78,165 @@ static const char s_portal_html[] =
 "};"
 "</script></body></html>";
 
-/* ── RFC 1035 Compliant DNS Captive Redirection Server ───────────────────── */
+/* ── RFC 1035 DNS & RFC 6762 mDNS Dual Redirection Server ─────────────────── */
 static void dns_server_task(void *pvParameters)
 {
     (void)pvParameters;
     uint8_t buffer[512];
 
+    /* 1. Setup unicast DNS on port 53 */
     s_dns_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
-    if (s_dns_sock < 0) {
-        ATLAS_LOG_ERROR(ATLAS_LOG_TAG_CORE, "Failed to create DNS socket: errno %d", errno);
-        vTaskDelete(NULL);
-        return;
+    if (s_dns_sock >= 0) {
+        struct sockaddr_in server_addr = {
+            .sin_family = AF_INET,
+            .sin_port = htons(53),
+            .sin_addr.s_addr = htonl(INADDR_ANY)
+        };
+        if (bind(s_dns_sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) == 0) {
+            ATLAS_LOG_INFO(ATLAS_LOG_TAG_CORE, "Captive DNS Redirection Server active on UDP port 53.");
+        }
     }
 
-    /* Set socket timeout to 1 second so stopping doesn't block */
-    struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
-    setsockopt(s_dns_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    /* 2. Setup multicast DNS (mDNS) on port 5353 for 'atlas.local' */
+    s_mdns_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+    if (s_mdns_sock >= 0) {
+        int reuse = 1;
+        setsockopt(s_mdns_sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 
-    struct sockaddr_in server_addr = {
-        .sin_family = AF_INET,
-        .sin_port = htons(53),
-        .sin_addr.s_addr = htonl(INADDR_ANY)
-    };
-
-    if (bind(s_dns_sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-        ATLAS_LOG_ERROR(ATLAS_LOG_TAG_CORE, "Failed to bind DNS socket to port 53: errno %d", errno);
-        close(s_dns_sock);
-        s_dns_sock = -1;
-        vTaskDelete(NULL);
-        return;
+        struct sockaddr_in mdns_addr = {
+            .sin_family = AF_INET,
+            .sin_port = htons(5353),
+            .sin_addr.s_addr = htonl(INADDR_ANY)
+        };
+        if (bind(s_mdns_sock, (struct sockaddr *)&mdns_addr, sizeof(mdns_addr)) == 0) {
+            struct ip_mreq mreq = {
+                .imr_multiaddr.s_addr = inet_addr("224.0.0.251"),
+                .imr_interface.s_addr = htonl(INADDR_ANY)
+            };
+            setsockopt(s_mdns_sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq));
+            ATLAS_LOG_INFO(ATLAS_LOG_TAG_CORE, "mDNS Responder active for 'atlas.local' on UDP port 5353.");
+        }
     }
-
-    ATLAS_LOG_INFO(ATLAS_LOG_TAG_CORE, "Captive DNS Redirection Server active on UDP port 53.");
 
     while (s_running) {
-        struct sockaddr_in client_addr;
-        socklen_t client_addr_len = sizeof(client_addr);
+        fd_set read_fds;
+        FD_ZERO(&read_fds);
+        int max_fd = -1;
 
-        int len = recvfrom(s_dns_sock, buffer, sizeof(buffer), 0,
-                           (struct sockaddr *)&client_addr, &client_addr_len);
-        if (len < 12) {
+        if (s_dns_sock >= 0) {
+            FD_SET(s_dns_sock, &read_fds);
+            if (s_dns_sock > max_fd) max_fd = s_dns_sock;
+        }
+        if (s_mdns_sock >= 0) {
+            FD_SET(s_mdns_sock, &read_fds);
+            if (s_mdns_sock > max_fd) max_fd = s_mdns_sock;
+        }
+
+        struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+        int sel = select(max_fd + 1, &read_fds, NULL, NULL, &tv);
+        if (sel <= 0) {
             continue;
         }
 
-        /* Check opcode == 0 (standard query, bits 11-14 of flags) */
-        if ((buffer[2] & 0x78) != 0) {
-            continue;
-        }
+        /* ── Handle Unicast DNS (Port 53) ────────────────────────────────── */
+        if (s_dns_sock >= 0 && FD_ISSET(s_dns_sock, &read_fds)) {
+            struct sockaddr_in client_addr;
+            socklen_t client_addr_len = sizeof(client_addr);
+            int len = recvfrom(s_dns_sock, buffer, sizeof(buffer), 0,
+                               (struct sockaddr *)&client_addr, &client_addr_len);
+            if (len >= 12 && (buffer[2] & 0x78) == 0) {
+                buffer[2] |= 0x80;
+                buffer[3] = 0x80;
 
-        /* DNS Header Flags: QR=1 (Response), RA=1 (Recursion Available), RCODE=0 (No Error) */
-        buffer[2] |= 0x80;
-        buffer[3] = 0x80;
+                int q_idx = 12;
+                while (q_idx < len && buffer[q_idx] != 0) {
+                    q_idx += buffer[q_idx] + 1;
+                }
+                q_idx++;
 
-        /* Parse Query Domain Name */
-        int q_idx = 12;
-        while (q_idx < len && buffer[q_idx] != 0) {
-            q_idx += buffer[q_idx] + 1;
-        }
-        q_idx++; /* Skip null terminator */
+                if (q_idx + 4 <= len) {
+                    uint16_t qtype = ((uint16_t)buffer[q_idx] << 8) | buffer[q_idx + 1];
+                    uint16_t qclass = ((uint16_t)buffer[q_idx + 2] << 8) | buffer[q_idx + 3];
+                    q_idx += 4;
 
-        if (q_idx + 4 > len) {
-            continue;
-        }
-
-        uint16_t qtype = ((uint16_t)buffer[q_idx] << 8) | buffer[q_idx + 1];
-        uint16_t qclass = ((uint16_t)buffer[q_idx + 2] << 8) | buffer[q_idx + 3];
-        q_idx += 4; /* Skip QTYPE and QCLASS */
-
-        if (qtype == 0x0001 && qclass == 0x0001) {
-            /* Type A (IPv4) IN Query: Provide 192.168.4.1 answer */
-            buffer[6] = 0x00; /* ANCOUNT = 1 */
-            buffer[7] = 0x01;
-
-            if (q_idx + 16 <= (int)sizeof(buffer)) {
-                /* Compressed name pointer to QNAME at offset 12 (0xc00c) */
-                buffer[q_idx++] = 0xc0;
-                buffer[q_idx++] = 0x0c;
-                /* Type A */
-                buffer[q_idx++] = 0x00;
-                buffer[q_idx++] = 0x01;
-                /* Class IN */
-                buffer[q_idx++] = 0x00;
-                buffer[q_idx++] = 0x01;
-                /* TTL: 60s */
-                buffer[q_idx++] = 0x00;
-                buffer[q_idx++] = 0x00;
-                buffer[q_idx++] = 0x00;
-                buffer[q_idx++] = 0x3c;
-                /* RDLENGTH: 4 bytes */
-                buffer[q_idx++] = 0x00;
-                buffer[q_idx++] = 0x04;
-                /* RDATA: 192.168.4.1 */
-                buffer[q_idx++] = 192;
-                buffer[q_idx++] = 168;
-                buffer[q_idx++] = 4;
-                buffer[q_idx++] = 1;
-
-                sendto(s_dns_sock, buffer, q_idx, 0,
-                       (struct sockaddr *)&client_addr, client_addr_len);
+                    if (qtype == 0x0001 && qclass == 0x0001) {
+                        buffer[6] = 0x00;
+                        buffer[7] = 0x01;
+                        if (q_idx + 16 <= (int)sizeof(buffer)) {
+                            buffer[q_idx++] = 0xc0;
+                            buffer[q_idx++] = 0x0c;
+                            buffer[q_idx++] = 0x00;
+                            buffer[q_idx++] = 0x01;
+                            buffer[q_idx++] = 0x00;
+                            buffer[q_idx++] = 0x01;
+                            buffer[q_idx++] = 0x00;
+                            buffer[q_idx++] = 0x00;
+                            buffer[q_idx++] = 0x00;
+                            buffer[q_idx++] = 0x3c;
+                            buffer[q_idx++] = 0x00;
+                            buffer[q_idx++] = 0x04;
+                            buffer[q_idx++] = 192;
+                            buffer[q_idx++] = 168;
+                            buffer[q_idx++] = 4;
+                            buffer[q_idx++] = 1;
+                            sendto(s_dns_sock, buffer, q_idx, 0,
+                                   (struct sockaddr *)&client_addr, client_addr_len);
+                        }
+                    } else {
+                        buffer[6] = 0x00;
+                        buffer[7] = 0x00;
+                        sendto(s_dns_sock, buffer, q_idx, 0,
+                               (struct sockaddr *)&client_addr, client_addr_len);
+                    }
+                }
             }
-        } else {
-            /* For Type AAAA (IPv6) or HTTPS (65): Return NODATA (0 answers, NOERROR) */
-            buffer[6] = 0x00; /* ANCOUNT = 0 */
-            buffer[7] = 0x00;
-            sendto(s_dns_sock, buffer, q_idx, 0,
-                   (struct sockaddr *)&client_addr, client_addr_len);
+        }
+
+        /* ── Handle Multicast DNS (Port 5353) ────────────────────────────── */
+        if (s_mdns_sock >= 0 && FD_ISSET(s_mdns_sock, &read_fds)) {
+            struct sockaddr_in client_addr;
+            socklen_t client_addr_len = sizeof(client_addr);
+            int len = recvfrom(s_mdns_sock, buffer, sizeof(buffer), 0,
+                               (struct sockaddr *)&client_addr, &client_addr_len);
+            if (len > 12) {
+                bool is_atlas = false;
+                for (int i = 12; i < len - 4; i++) {
+                    if ((buffer[i] == 'a' || buffer[i] == 'A') &&
+                        (buffer[i+1] == 't' || buffer[i+1] == 'T') &&
+                        (buffer[i+2] == 'l' || buffer[i+2] == 'L') &&
+                        (buffer[i+3] == 'a' || buffer[i+3] == 'A') &&
+                        (buffer[i+4] == 's' || buffer[i+4] == 'S')) {
+                        is_atlas = true;
+                        break;
+                    }
+                }
+                if (is_atlas) {
+                    ATLAS_LOG_INFO(ATLAS_LOG_TAG_CORE, "mDNS: Answering 'atlas.local' query from %s",
+                                   inet_ntoa(client_addr.sin_addr));
+                    sendto(s_mdns_sock, s_mdns_response, sizeof(s_mdns_response), 0,
+                           (struct sockaddr *)&client_addr, client_addr_len);
+
+                    struct sockaddr_in mcast_dst = {
+                        .sin_family = AF_INET,
+                        .sin_port = htons(5353),
+                        .sin_addr.s_addr = inet_addr("224.0.0.251")
+                    };
+                    sendto(s_mdns_sock, s_mdns_response, sizeof(s_mdns_response), 0,
+                           (struct sockaddr *)&mcast_dst, sizeof(mcast_dst));
+                }
+            }
         }
     }
 
-    close(s_dns_sock);
-    s_dns_sock = -1;
+    if (s_dns_sock >= 0) {
+        close(s_dns_sock);
+        s_dns_sock = -1;
+    }
+
+    if (s_mdns_sock >= 0) {
+        close(s_mdns_sock);
+        s_mdns_sock = -1;
+    }
     vTaskDelete(NULL);
 }
 
@@ -402,6 +471,11 @@ esp_err_t atlas_captive_stop(void)
     if (s_dns_sock >= 0) {
         close(s_dns_sock);
         s_dns_sock = -1;
+    }
+
+    if (s_mdns_sock >= 0) {
+        close(s_mdns_sock);
+        s_mdns_sock = -1;
     }
 
     esp_wifi_stop();
