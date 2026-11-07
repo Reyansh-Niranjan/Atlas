@@ -111,7 +111,7 @@ static void dns_server_task(void *pvParameters)
         if (bind(s_mdns_sock, (struct sockaddr *)&mdns_addr, sizeof(mdns_addr)) == 0) {
             struct ip_mreq mreq = {
                 .imr_multiaddr.s_addr = inet_addr("224.0.0.251"),
-                .imr_interface.s_addr = htonl(INADDR_ANY)
+                .imr_interface.s_addr = inet_addr("192.168.4.1")
             };
             setsockopt(s_mdns_sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq));
             ATLAS_LOG_INFO(ATLAS_LOG_TAG_CORE, "mDNS Responder active for 'atlas.local' on UDP port 5353.");
@@ -159,8 +159,16 @@ static void dns_server_task(void *pvParameters)
                     uint16_t qclass = ((uint16_t)buffer[q_idx + 2] << 8) | buffer[q_idx + 3];
                     q_idx += 4;
 
-                    if (qtype == 0x0001 && qclass == 0x0001) {
-                        buffer[6] = 0x00;
+                    uint16_t qclass_clean = qclass & 0x7FFF;
+                    /* Header counts: clear NSCOUNT and ARCOUNT (RFC 1035 / EDNS0 safety) */
+                    buffer[8] = 0x00;  /* NSCOUNT = 0 */
+                    buffer[9] = 0x00;
+                    buffer[10] = 0x00; /* ARCOUNT = 0 */
+                    buffer[11] = 0x00;
+
+                    if (qtype == 0x0001 && (qclass_clean == 0x0001 || qclass == 0x00FF)) {
+                        /* Type A Query -> 192.168.4.1 */
+                        buffer[6] = 0x00; /* ANCOUNT = 1 */
                         buffer[7] = 0x01;
                         if (q_idx + 16 <= (int)sizeof(buffer)) {
                             buffer[q_idx++] = 0xc0;
@@ -183,7 +191,8 @@ static void dns_server_task(void *pvParameters)
                                    (struct sockaddr *)&client_addr, client_addr_len);
                         }
                     } else {
-                        buffer[6] = 0x00;
+                        /* NODATA response (0 answers, NOERROR) */
+                        buffer[6] = 0x00; /* ANCOUNT = 0 */
                         buffer[7] = 0x00;
                         sendto(s_dns_sock, buffer, q_idx, 0,
                                (struct sockaddr *)&client_addr, client_addr_len);
@@ -213,7 +222,11 @@ static void dns_server_task(void *pvParameters)
                 if (is_atlas) {
                     ATLAS_LOG_INFO(ATLAS_LOG_TAG_CORE, "mDNS: Answering 'atlas.local' query from %s",
                                    inet_ntoa(client_addr.sin_addr));
-                    sendto(s_mdns_sock, s_mdns_response, sizeof(s_mdns_response), 0,
+                    uint8_t m_resp[sizeof(s_mdns_response)];
+                    memcpy(m_resp, s_mdns_response, sizeof(m_resp));
+                    m_resp[0] = buffer[0];
+                    m_resp[1] = buffer[1];
+                    sendto(s_mdns_sock, m_resp, sizeof(m_resp), 0,
                            (struct sockaddr *)&client_addr, client_addr_len);
 
                     struct sockaddr_in mcast_dst = {
