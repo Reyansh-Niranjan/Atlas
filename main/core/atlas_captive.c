@@ -8,6 +8,7 @@
 #include "atlas_onboarding.h"
 
 #include <string.h>
+#include <errno.h>
 #include <stdio.h>
 #include <sys/param.h>
 #include <sys/socket.h>
@@ -57,19 +58,22 @@ static const char s_portal_html[] =
 "};"
 "</script></body></html>";
 
-/* ── Lightweight DNS Captive Redirection Server ──────────────────────────── */
+/* ── RFC 1035 Compliant DNS Captive Redirection Server ───────────────────── */
 static void dns_server_task(void *pvParameters)
 {
     (void)pvParameters;
     uint8_t buffer[512];
-    struct sockaddr_in client_addr;
-    socklen_t client_addr_len = sizeof(client_addr);
 
-    s_dns_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    s_dns_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
     if (s_dns_sock < 0) {
+        ATLAS_LOG_ERROR(ATLAS_LOG_TAG_CORE, "Failed to create DNS socket: errno %d", errno);
         vTaskDelete(NULL);
         return;
     }
+
+    /* Set socket timeout to 1 second so stopping doesn't block */
+    struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+    setsockopt(s_dns_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     struct sockaddr_in server_addr = {
         .sin_family = AF_INET,
@@ -78,31 +82,56 @@ static void dns_server_task(void *pvParameters)
     };
 
     if (bind(s_dns_sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        ATLAS_LOG_ERROR(ATLAS_LOG_TAG_CORE, "Failed to bind DNS socket to port 53: errno %d", errno);
         close(s_dns_sock);
         s_dns_sock = -1;
         vTaskDelete(NULL);
         return;
     }
 
+    ATLAS_LOG_INFO(ATLAS_LOG_TAG_CORE, "Captive DNS Redirection Server active on UDP port 53.");
+
     while (s_running) {
+        struct sockaddr_in client_addr;
+        socklen_t client_addr_len = sizeof(client_addr);
+
         int len = recvfrom(s_dns_sock, buffer, sizeof(buffer), 0,
                            (struct sockaddr *)&client_addr, &client_addr_len);
-        if (len > 12) {
-            /* DNS Header: Flags -> 0x8180 (Standard response, no error) */
-            buffer[2] = 0x81;
-            buffer[3] = 0x80;
-            buffer[6] = 0x00; /* Answer count = 1 */
+        if (len < 12) {
+            continue;
+        }
+
+        /* Check opcode == 0 (standard query, bits 11-14 of flags) */
+        if ((buffer[2] & 0x78) != 0) {
+            continue;
+        }
+
+        /* DNS Header Flags: QR=1 (Response), RA=1 (Recursion Available), RCODE=0 (No Error) */
+        buffer[2] |= 0x80;
+        buffer[3] = 0x80;
+
+        /* Parse Query Domain Name */
+        int q_idx = 12;
+        while (q_idx < len && buffer[q_idx] != 0) {
+            q_idx += buffer[q_idx] + 1;
+        }
+        q_idx++; /* Skip null terminator */
+
+        if (q_idx + 4 > len) {
+            continue;
+        }
+
+        uint16_t qtype = ((uint16_t)buffer[q_idx] << 8) | buffer[q_idx + 1];
+        uint16_t qclass = ((uint16_t)buffer[q_idx + 2] << 8) | buffer[q_idx + 3];
+        q_idx += 4; /* Skip QTYPE and QCLASS */
+
+        if (qtype == 0x0001 && qclass == 0x0001) {
+            /* Type A (IPv4) IN Query: Provide 192.168.4.1 answer */
+            buffer[6] = 0x00; /* ANCOUNT = 1 */
             buffer[7] = 0x01;
 
-            /* Parse Query section */
-            int q_idx = 12;
-            while (q_idx < len && buffer[q_idx] != 0) {
-                q_idx += buffer[q_idx] + 1;
-            }
-            q_idx += 5; /* Skip null byte + Type(2) + Class(2) */
-
             if (q_idx + 16 <= (int)sizeof(buffer)) {
-                /* Append Answer: Pointer to domain name */
+                /* Compressed name pointer to QNAME at offset 12 (0xc00c) */
                 buffer[q_idx++] = 0xc0;
                 buffer[q_idx++] = 0x0c;
                 /* Type A */
@@ -111,15 +140,15 @@ static void dns_server_task(void *pvParameters)
                 /* Class IN */
                 buffer[q_idx++] = 0x00;
                 buffer[q_idx++] = 0x01;
-                /* TTL: 60 seconds */
+                /* TTL: 60s */
                 buffer[q_idx++] = 0x00;
                 buffer[q_idx++] = 0x00;
                 buffer[q_idx++] = 0x00;
                 buffer[q_idx++] = 0x3c;
-                /* Data Length: 4 bytes (IPv4) */
+                /* RDLENGTH: 4 bytes */
                 buffer[q_idx++] = 0x00;
                 buffer[q_idx++] = 0x04;
-                /* IP: 192.168.4.1 */
+                /* RDATA: 192.168.4.1 */
                 buffer[q_idx++] = 192;
                 buffer[q_idx++] = 168;
                 buffer[q_idx++] = 4;
@@ -128,6 +157,12 @@ static void dns_server_task(void *pvParameters)
                 sendto(s_dns_sock, buffer, q_idx, 0,
                        (struct sockaddr *)&client_addr, client_addr_len);
             }
+        } else {
+            /* For Type AAAA (IPv6) or HTTPS (65): Return NODATA (0 answers, NOERROR) */
+            buffer[6] = 0x00; /* ANCOUNT = 0 */
+            buffer[7] = 0x00;
+            sendto(s_dns_sock, buffer, q_idx, 0,
+                   (struct sockaddr *)&client_addr, client_addr_len);
         }
     }
 
@@ -199,13 +234,23 @@ static esp_err_t portal_connect_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* Captive portal redirect for Apple and Android checks */
+/* Captive portal redirect for Apple, Android, Windows, and catch-all */
 static esp_err_t portal_redirect_handler(httpd_req_t *req)
 {
+    ATLAS_LOG_INFO(ATLAS_LOG_TAG_CORE, "Captive portal redirecting '%s' to http://192.168.4.1/", req->uri);
     httpd_resp_set_status(req, "302 Found");
     httpd_resp_set_hdr(req, "Location", "http://192.168.4.1/");
-    httpd_resp_send(req, NULL, 0);
+    httpd_resp_set_type(req, "text/html");
+    const char *resp = "<!DOCTYPE html><html><head><meta http-equiv='refresh' content='0;url=http://192.168.4.1/'></head>"
+                       "<body>Redirecting to <a href='http://192.168.4.1/'>ATLAS Setup</a></body></html>";
+    httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
+}
+
+static esp_err_t portal_404_handler(httpd_req_t *req, httpd_err_code_t err)
+{
+    (void)err;
+    return portal_redirect_handler(req);
 }
 
 esp_err_t atlas_captive_start(atlas_captive_cred_cb_t cred_cb, char *out_ssid, size_t max_ssid_len)
@@ -249,15 +294,27 @@ esp_err_t atlas_captive_start(atlas_captive_cred_cb_t cred_cb, char *out_ssid, s
 
     s_running = true;
 
-    /* Start DNS Redirect Task */
-    xTaskCreate(dns_server_task, "dns_task", 3072, NULL, 5, &s_dns_task_handle);
+    /* Configure DHCP Option 114 (RFC 8908 / RFC 8910 Captive Portal Identification) */
+    if (s_ap_netif) {
+        static const char s_portal_url[] = "http://192.168.4.1/";
+        esp_netif_dhcps_stop(s_ap_netif);
+        esp_netif_dhcps_option(s_ap_netif, ESP_NETIF_OP_SET, ESP_NETIF_CAPTIVEPORTAL_URI,
+                               (void *)s_portal_url, strlen(s_portal_url));
+        esp_netif_dhcps_start(s_ap_netif);
+    }
+
+    /* Start DNS Redirect Task with 4KB stack */
+    xTaskCreate(dns_server_task, "dns_task", 4096, NULL, 5, &s_dns_task_handle);
 
     /* Start HTTP Server */
     httpd_config_t http_cfg = HTTPD_DEFAULT_CONFIG();
-    http_cfg.max_uri_handlers = 12;
+    http_cfg.max_uri_handlers = 16;
+    http_cfg.max_open_sockets = 13;
+    http_cfg.lru_purge_enable = true;
     http_cfg.stack_size = 4096;
 
     if (httpd_start(&s_http_server, &http_cfg) == ESP_OK) {
+        httpd_register_err_handler(s_http_server, HTTPD_404_NOT_FOUND, portal_404_handler);
         httpd_uri_t root_uri = {
             .uri = "/",
             .method = HTTP_GET,
