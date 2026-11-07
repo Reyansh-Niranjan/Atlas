@@ -1,3 +1,4 @@
+#include "atlas_logos.h"
 /**
  * @file screen_onboarding.c
  * @brief First-Boot Onboarding & Wi-Fi Provisioning Wizard Implementation for ATLAS OS
@@ -172,15 +173,22 @@ void screen_onboarding_run(void)
                 atlas_gfx_fill_rect(fb, 16, 36, 288, 168, COLOR_PANEL_BG);
                 atlas_gfx_draw_rect(fb, 16, 36, 288, 168, COLOR_BORDER_NORM);
 
-                atlas_gfx_draw_string(fb, 28, 48, "WELCOME TO ATLAS OS", COLOR_CYAN, COLOR_PANEL_BG, 1);
-                atlas_gfx_draw_string(fb, 28, 64, "ESP32-S3 Handheld Cybernetic Terminal", COLOR_TEXT_MUTED, COLOR_PANEL_BG, 1);
+                /* Atlas OS Logo */
+                atlas_gfx_draw_bitmap(fb, 26, 42, ATLAS_LOGO_W, ATLAS_LOGO_H, s_atlas_logo_32x32, false);
+                atlas_gfx_draw_rect(fb, 25, 41, ATLAS_LOGO_W + 2, ATLAS_LOGO_H + 2, COLOR_BORDER_NORM);
 
-                atlas_gfx_draw_string(fb, 28, 88, "PHYSICAL HARDWARE CONTROLS:", COLOR_YELLOW, COLOR_PANEL_BG, 1);
-                atlas_gfx_draw_string(fb, 28, 108, "Joystick  : 2-Axis Navigation", COLOR_WHITE, COLOR_PANEL_BG, 1);
-                atlas_gfx_draw_string(fb, 28, 126, "[A] SW1   : Select / Confirm / Action", COLOR_WHITE, COLOR_PANEL_BG, 1);
-                atlas_gfx_draw_string(fb, 28, 144, "[B] SW2   : Back / Cancel / Return", COLOR_WHITE, COLOR_PANEL_BG, 1);
-                atlas_gfx_draw_string(fb, 28, 162, "[C] SW3   : System Menu / Shell", COLOR_WHITE, COLOR_PANEL_BG, 1);
-                atlas_gfx_draw_string(fb, 28, 180, "[D] SW4   : Tools / Skip to Offline", COLOR_WHITE, COLOR_PANEL_BG, 1);
+                atlas_gfx_draw_string(fb, 66, 44, "ATLAS OS HANDHELD", COLOR_CYAN, COLOR_PANEL_BG, 1);
+                atlas_gfx_draw_string(fb, 66, 56, "Cybernetic Terminal v1.0", COLOR_WHITE, COLOR_PANEL_BG, 1);
+                atlas_gfx_draw_string(fb, 66, 68, "ESP32-S3 Dual-Core 240MHz", COLOR_TEXT_MUTED, COLOR_PANEL_BG, 1);
+
+                atlas_gfx_draw_rect(fb, 26, 80, 268, 1, COLOR_BORDER_NORM);
+
+                atlas_gfx_draw_string(fb, 26, 88, "HARDWARE INPUT CONTROLS:", COLOR_YELLOW, COLOR_PANEL_BG, 1);
+                atlas_gfx_draw_string(fb, 26, 106, "Joystick  : 2-Axis Navigation", COLOR_WHITE, COLOR_PANEL_BG, 1);
+                atlas_gfx_draw_string(fb, 26, 122, "[A] SW1   : Select / Confirm / Action", COLOR_WHITE, COLOR_PANEL_BG, 1);
+                atlas_gfx_draw_string(fb, 26, 138, "[B] SW2   : Back / Cancel / Return", COLOR_WHITE, COLOR_PANEL_BG, 1);
+                atlas_gfx_draw_string(fb, 26, 154, "[C] SW3   : System Menu / Shell", COLOR_WHITE, COLOR_PANEL_BG, 1);
+                atlas_gfx_draw_string(fb, 26, 170, "[D] SW4   : Tools / Skip to Offline", COLOR_WHITE, COLOR_PANEL_BG, 1);
 
                 draw_footer(fb, "[A] Begin Initial Setup");
             }

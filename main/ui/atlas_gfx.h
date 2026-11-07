@@ -48,6 +48,7 @@ void atlas_gfx_draw_char(uint16_t *fb, int x, int y, char c, uint16_t fg, uint16
 void atlas_gfx_draw_string(uint16_t *fb, int x, int y, const char *str, uint16_t fg, uint16_t bg, int scale);
 void atlas_gfx_draw_string_centered(uint16_t *fb, int y, const char *str, uint16_t fg, uint16_t bg, int scale);
 void atlas_gfx_draw_card(uint16_t *fb, int x, int y, int w, int h, const char *title, const char *tagline, bool selected);
+void atlas_gfx_draw_bitmap(uint16_t *fb, int x, int y, int w, int h, const uint16_t *bitmap, bool transparent);
 
 #ifdef __cplusplus
 }

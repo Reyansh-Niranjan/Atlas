@@ -745,12 +745,12 @@ static esp_err_t launch_apkg_store(void)
             char app_id[ATLAS_APP_ID_MAX_LEN] = {0};
             char name[ATLAS_APP_NAME_MAX_LEN] = {0};
             char version[ATLAS_APP_VERSION_MAX_LEN] = {0};
-            char tagline[ATLAS_APP_TAGLINE_MAX_LEN] = {0};
 
             if (json_extract_string(json_buf, "app_id", app_id, sizeof(app_id)) &&
                 json_extract_string(json_buf, "name", name, sizeof(name)) &&
                 json_extract_string(json_buf, "version", version, sizeof(version))) {
 
+                char tagline[ATLAS_APP_TAGLINE_MAX_LEN] = {0};
                 if (!json_extract_string(json_buf, "tagline", tagline, sizeof(tagline))) {
                     snprintf(tagline, sizeof(tagline), "v%s", version);
                 }
@@ -893,7 +893,7 @@ static esp_err_t launch_apkg_store(void)
             notice_timer--;
             atlas_gfx_draw_string_centered(fb, 182, notice_msg, COLOR_YELLOW, COLOR_PANEL_BG, 1);
         } else if (count > 0) {
-            apkg_store_entry_t *cur = &entries[selected_idx];
+            const apkg_store_entry_t *cur = &entries[selected_idx];
             atlas_gfx_draw_string(fb, 20, 172, cur->tagline, COLOR_WHITE, COLOR_PANEL_BG, 1);
 
             if (cur->is_protected) {

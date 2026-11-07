@@ -271,3 +271,29 @@ void atlas_gfx_draw_card(uint16_t *fb, int x, int y, int w, int h, const char *t
         atlas_gfx_draw_string(fb, x + 10, y + 34, tagline, COLOR_TEXT_MUTED, 0x0001, 1);
     }
 }
+
+void atlas_gfx_draw_bitmap(uint16_t *fb, int x, int y, int w, int h, const uint16_t *bitmap, bool transparent)
+{
+    if (!fb || !bitmap || w <= 0 || h <= 0) return;
+    if (x >= ATLAS_LCD_WIDTH || y >= ATLAS_LCD_HEIGHT || (x + w) <= 0 || (y + h) <= 0) return;
+
+    for (int row = 0; row < h; row++) {
+        int py = y + row;
+        if (py < 0 || py >= ATLAS_LCD_HEIGHT) continue;
+
+        if (!transparent && x >= 0 && (x + w) <= ATLAS_LCD_WIDTH) {
+            /* Fast burst row copy via DMA-optimized word moves */
+            memcpy(&fb[py * ATLAS_LCD_WIDTH + x], &bitmap[row * w], (size_t)w * sizeof(uint16_t));
+        } else {
+            for (int col = 0; col < w; col++) {
+                int px = x + col;
+                if (px < 0 || px >= ATLAS_LCD_WIDTH) continue;
+                uint16_t pixel = bitmap[row * w + col];
+                if (transparent && pixel == COLOR_BLACK) {
+                    continue;
+                }
+                fb[py * ATLAS_LCD_WIDTH + px] = pixel;
+            }
+        }
+    }
+}

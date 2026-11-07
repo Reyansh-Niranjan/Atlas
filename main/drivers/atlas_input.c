@@ -32,9 +32,11 @@ static adc_cali_handle_t         s_cali_y = NULL;
 static SemaphoreHandle_t         s_state_mutex = NULL;
 static atlas_input_state_t       s_current_state = {0};
 
-/* Rolling Average History */
+/* Rolling Average History & O(1) Running Accumulator */
 static int s_joy_x_history[JOY_SAMPLES_WINDOW] = {0};
 static int s_joy_y_history[JOY_SAMPLES_WINDOW] = {0};
+static int s_joy_sum_x = 0;
+static int s_joy_sum_y = 0;
 static int s_joy_hist_idx = 0;
 static bool s_joy_hist_primed = false;
 
@@ -122,22 +124,27 @@ static void atlas_input_task(void *pvParam)
         adc_oneshot_read(s_adc_handle, ATLAS_ADC_CH_JOY_X, &raw_x);
         adc_oneshot_read(s_adc_handle, ATLAS_ADC_CH_JOY_Y, &raw_y);
 
-        /* 2. Update 8-Sample Circular Moving Average Buffer */
-        s_joy_x_history[s_joy_hist_idx] = raw_x;
-        s_joy_y_history[s_joy_hist_idx] = raw_y;
-        s_joy_hist_idx = (s_joy_hist_idx + 1) % JOY_SAMPLES_WINDOW;
-
-        int sum_x = 0, sum_y = 0;
-        int count = s_joy_hist_primed ? JOY_SAMPLES_WINDOW : s_joy_hist_idx;
-        if (s_joy_hist_idx == 0) s_joy_hist_primed = true;
-
-        for (int i = 0; i < (s_joy_hist_primed ? JOY_SAMPLES_WINDOW : count); i++) {
-            sum_x += s_joy_x_history[i];
-            sum_y += s_joy_y_history[i];
+        /* 2. Update 8-Sample Circular Moving Average with O(1) Running Sum */
+        if (s_joy_hist_primed) {
+            s_joy_sum_x += raw_x - s_joy_x_history[s_joy_hist_idx];
+            s_joy_sum_y += raw_y - s_joy_y_history[s_joy_hist_idx];
+            s_joy_x_history[s_joy_hist_idx] = raw_x;
+            s_joy_y_history[s_joy_hist_idx] = raw_y;
+            s_joy_hist_idx = (s_joy_hist_idx + 1) & (JOY_SAMPLES_WINDOW - 1);
+        } else {
+            s_joy_x_history[s_joy_hist_idx] = raw_x;
+            s_joy_y_history[s_joy_hist_idx] = raw_y;
+            s_joy_sum_x += raw_x;
+            s_joy_sum_y += raw_y;
+            s_joy_hist_idx++;
+            if (s_joy_hist_idx >= JOY_SAMPLES_WINDOW) {
+                s_joy_hist_idx = 0;
+                s_joy_hist_primed = true;
+            }
         }
-        int div = s_joy_hist_primed ? JOY_SAMPLES_WINDOW : (count > 0 ? count : 1);
-        int avg_x = sum_x / div;
-        int avg_y = sum_y / div;
+
+        int avg_x = s_joy_hist_primed ? (s_joy_sum_x >> 3) : (s_joy_sum_x / (s_joy_hist_idx > 0 ? s_joy_hist_idx : 1));
+        int avg_y = s_joy_hist_primed ? (s_joy_sum_y >> 3) : (s_joy_sum_y / (s_joy_hist_idx > 0 ? s_joy_hist_idx : 1));
 
         int16_t norm_x = normalize_axis(avg_x);
         int16_t norm_y = (int16_t)(-normalize_axis(avg_y)); /* Inverted Y-axis polarity */

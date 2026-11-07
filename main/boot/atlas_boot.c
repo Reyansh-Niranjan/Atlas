@@ -1,3 +1,4 @@
+#include "atlas_logos.h"
 /**
  * @file atlas_boot.c
  * @brief Structured Boot Manager Implementation for ATLAS OS
@@ -132,6 +133,11 @@ static void boot_stage_splash(uint16_t *boot_fb)
 {
     ATLAS_LOG_INFO(ATLAS_LOG_TAG_BOOT, "Rendering boot splash...");
     atlas_gfx_clear(boot_fb, COLOR_BLACK);
+
+    /* Centered ATLAS OS Logo: 32x32 at x = 144, y = 38 */
+    atlas_gfx_draw_bitmap(boot_fb, (ATLAS_LCD_WIDTH - ATLAS_LOGO_W) / 2, 38,
+                          ATLAS_LOGO_W, ATLAS_LOGO_H, s_atlas_logo_32x32, false);
+
     atlas_gfx_draw_string_centered(boot_fb, 80,  "ATLAS HANDHELD",            COLOR_CYAN,       COLOR_BLACK, 2);
     atlas_gfx_draw_string_centered(boot_fb, 115, "R2 Reyansh Edition - v1.0", COLOR_WHITE,      COLOR_BLACK, 1);
     atlas_gfx_draw_string_centered(boot_fb, 135, "ESP32-S3 | 16MB Flash | 8MB PSRAM",

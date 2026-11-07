@@ -1,3 +1,4 @@
+#include "atlas_logos.h"
 /**
  * @file screen_home.c
  * @brief Dynamic Grid Home Launcher for ATLAS OS
@@ -306,6 +307,19 @@ void screen_home_run(void)
                         /* Icon or category indicator badge */
                         uint16_t badge_col = (app.type == ATLAS_APP_TYPE_BUILTIN) ? COLOR_CYAN : COLOR_PURPLE;
                         atlas_gfx_fill_rect(fb, COL_X[c] + CARD_W - 14, ROW_Y[r] + 8, 6, 6, badge_col);
+
+                        /* Render App Icon if available */
+                        if (strcmp(app.app_id, "org.atlas.store") == 0) {
+                            atlas_gfx_draw_bitmap(fb, COL_X[c] + CARD_W - 38, ROW_Y[r] + 38,
+                                                  APKG_LOGO_W, APKG_LOGO_H, s_apkg_logo_32x32, false);
+                            atlas_gfx_draw_rect(fb, COL_X[c] + CARD_W - 39, ROW_Y[r] + 37,
+                                                APKG_LOGO_W + 2, APKG_LOGO_H + 2, COLOR_BORDER_NORM);
+                        } else if (strcmp(app.app_id, "org.atlas.settings") == 0) {
+                            atlas_gfx_draw_bitmap(fb, COL_X[c] + CARD_W - 38, ROW_Y[r] + 38,
+                                                  ATLAS_LOGO_W, ATLAS_LOGO_H, s_atlas_logo_32x32, false);
+                            atlas_gfx_draw_rect(fb, COL_X[c] + CARD_W - 39, ROW_Y[r] + 37,
+                                                ATLAS_LOGO_W + 2, ATLAS_LOGO_H + 2, COLOR_BORDER_NORM);
+                        }
                     }
                 }
             }
